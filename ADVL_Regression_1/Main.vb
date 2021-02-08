@@ -51,7 +51,7 @@ Public Class Main
     'Adding the service reference to other projects that dont include the Message Service project: -------------------------------
     'Run the ADVL_Network_1 application to start the message service.
     'In Microsoft Visual Studio select: Project \ Add Service Reference
-    'Enter the address: http://localhost:8733/ADVLService
+    'Enter the address: http://localhost:8734/ADVLService
     'Press the Go button.
     'MsgService is found.
     'Press OK to add ServiceReference1 to the project.
@@ -163,7 +163,6 @@ Public Class Main
     Public WithEvents ApplicationUsage As New ADVL_Utilities_Library_1.Usage 'This object stores application usage information.
 
     'Declare Forms used by the application:
-    ''Public WithEvents LinearRegr As frmLinearRegr
     Public WithEvents LinRegrForm As frmLinearRegr
     Public WithEvents NonLinRegrForm As frmNonLinRegr
     Public WithEvents WebPageList As frmWebPageList
@@ -175,13 +174,11 @@ Public Class Main
     Public WithEvents NewWebPage As frmWebPage
     Public WebPageFormList As New ArrayList 'Used for displaying multiple WebView forms.
 
-    ''Declare objects used to connect to the Communication Network:
     'Declare objects used to connect to the Message Service:
     Public client As ServiceReference1.MsgServiceClient
     Public WithEvents XMsg As New ADVL_Utilities_Library_1.XMessage
     Dim XDoc As New System.Xml.XmlDocument
     Public Status As New System.Collections.Specialized.StringCollection
-    'Dim ClientAppNetName As String = "" 'The name of the client Application Network requesting service. 
     Dim ClientProNetName As String = "" 'The name of the client Project Network requesting service. 
     Dim ClientAppName As String = "" 'The name of the client requesting service
     Dim ClientConnName As String = "" 'The name of the client connection requesting service
@@ -190,15 +187,14 @@ Public Class Main
     Dim xlocns As New List(Of XElement) 'A list of locations. Each location forms part of the reply message. The information in the reply message will be sent to the specified location in the client application.
     Dim MessageText As String = "" 'The text of a message sent through the Application Network.
 
+    Public OnCompletionInstruction As String = "Stop" 'The last instruction returned on completion of the processing of an XMessage.
+    Public EndInstruction As String = "Stop" 'Another method of specifying the last instruction. This is processed in the EndOfSequence section of XMsg.Instructions.
+
     Public ConnectionName As String = "" 'The name of the connection used to connect this application to the ComNet (Message Service).
 
-    'Public AppNetName As String = "" 'The name of the Application Network (or Project Network)
-    'Public AppNetPath As String = "" 'The path of the Application Network (or Project Network)
     Public ProNetName As String = "" 'The name of the Project Network
     Public ProNetPath As String = "" 'The path of the Project Network
 
-    'Public MsgServiceAppPath As String = "" 'The application path of the Message Service application (ComNet). This is where the "Application.Lock" file will be while ComNet is running
-    'Public MsgServiceExePath As String = "" 'The executable path of the Message Service.
     Public AdvlNetworkAppPath As String = "" 'The application path of the ADVL Network application (ComNet). This is where the "Application.Lock" file will be while ComNet is running
     Public AdvlNetworkExePath As String = "" 'The executable path of the ADVL Network.
 
@@ -234,12 +230,16 @@ Public Class Main
 
     Private WithEvents bgwComCheck As New System.ComponentModel.BackgroundWorker 'Used to perform communication checks on a separate thread.
 
-    Private WithEvents bgwSendMessage As New System.ComponentModel.BackgroundWorker 'Used to send a message through the Message Service.
+    Public WithEvents bgwSendMessage As New System.ComponentModel.BackgroundWorker 'Used to send a message through the Message Service.
     Dim SendMessageParams As New clsSendMessageParams 'This hold the Send Message parameters: .ProjectNetworkName, .ConnectionName & .Message
 
     'Regression Server objects:
-    Dim LinRegr As New clsLinRegr 'Linear Regression class.
-    Dim NonLinRegr As New clsNonLinRegr 'Non-Linear Regression class.
+    Dim WithEvents LinRegr As New clsLinRegr 'Linear Regression class.
+    Dim WithEvents NonLinRegr As New clsNonLinRegr 'Non-Linear Regression class.
+
+    'Alternative SendMessage background worker - needed to send a message while instructions are being processed.
+    Public WithEvents bgwSendMessageAlt As New System.ComponentModel.BackgroundWorker 'Used to send a message through the Message Service - alternative backgound worker.
+    Dim SendMessageParamsAlt As New clsSendMessageParams 'This hold the Send Message parameters: .ProjectNetworkName, .ConnectionName & .Message - for the alternative background worker.
 
 #End Region 'Variable Declarations ------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -283,80 +283,177 @@ Public Class Main
     Private Sub ProcessInstructions(ByVal Instructions As String)
         'Process the XMessage instructions.
 
-        'Add the message header to the XMessages window:
-        Message.XAddText("Message received: " & vbCrLf, "XmlReceivedNotice")
+        Dim MsgType As String
+        If Instructions.StartsWith("<XMsg>") Then
+            MsgType = "XMsg"
+            If ShowXMessages Then
+                'Add the message header to the XMessages window:
+                Message.XAddText("Message received: " & vbCrLf, "XmlReceivedNotice")
+            End If
+        ElseIf Instructions.StartsWith("<XSys>") Then
+            MsgType = "XSys"
+            If ShowSysMessages Then
+                'Add the message header to the XMessages window:
+                Message.XAddText("System Message received: " & vbCrLf, "XmlReceivedNotice")
+            End If
+        Else
+            MsgType = "Unknown"
+        End If
 
-        If Instructions.StartsWith("<XMsg>") Then 'This is an XMessage set of instructions.
-            Try
-                'Inititalise the reply message:
-                ClientProNetName = "" 'ADDED 22Jul19
-                ClientConnName = "" 'ADDED 22Jul19
-                ClientAppName = "" 'ADDED 22Jul19
-                xlocns.Clear() 'Clear the list of locations in the reply message. ADDED 22Jul19
-                Dim Decl As New XDeclaration("1.0", "utf-8", "yes")
-                MessageXDoc = New XDocument(Decl, Nothing) 'Reply message - this will be sent to the Client App.
-                xmessage = New XElement("XMsg")
+        'If ShowXMessages Then
+        '    'Add the message header to the XMessages window:
+        '    Message.XAddText("Message received: " & vbCrLf, "XmlReceivedNotice")
+        'End If
+
+        'If Instructions.StartsWith("<XMsg>") Then 'This is an XMessage set of instructions.
+        If MsgType = "XMsg" Or MsgType = "XSys" Then 'This is an XMessage or XSystem set of instructions.
+                Try
+                    'Inititalise the reply message:
+                    ClientProNetName = ""
+                    ClientConnName = ""
+                    ClientAppName = ""
+                    xlocns.Clear() 'Clear the list of locations in the reply message. 
+                    Dim Decl As New XDeclaration("1.0", "utf-8", "yes")
+                    MessageXDoc = New XDocument(Decl, Nothing) 'Reply message - this will be sent to the Client App.
+                'xmessage = New XElement("XMsg")
+                xmessage = New XElement(MsgType)
                 xlocns.Add(New XElement("Main")) 'Initially set the location in the Client App to Main.
 
-                'Run the received message:
-                Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
-
-                XDoc.LoadXml(XmlHeader & vbCrLf & Instructions.Replace("&", "&amp;")) 'Replace "&" with "&amp:" before loading the XML text.
-                Message.XAddXml(XDoc)  'Add the message to the XMessages window.
-                Message.XAddText(vbCrLf, "Normal") 'Add extra line
-                XMsg.Run(XDoc, Status)
-            Catch ex As Exception
-                Message.Add("Error running XMsg: " & ex.Message & vbCrLf)
-            End Try
-
-            'XMessage has been run.
-            'Reply to this message:
-            'Add the message reply to the XMessages window:
-            'Complete the MessageXDoc:
-            xmessage.Add(xlocns(xlocns.Count - 1)) 'Add the last location reply instructions to the message.
-            MessageXDoc.Add(xmessage)
-            MessageText = MessageXDoc.ToString
-
-            If ClientConnName = "" Then
-                'No client to send a message to - process the message locally.
-                Message.XAddText("Message processed locally:" & vbCrLf, "XmlSentNotice")
-                Message.XAddXml(MessageText)
-                Message.XAddText(vbCrLf, "Normal") 'Add extra line
-                ProcessLocalInstructions(MessageText)
-            Else
-                'Message.XAddText("Message sent to " & ClientConnName & ":" & vbCrLf, "XmlSentNotice")
-                Message.XAddText("Message sent to [" & ClientProNetName & "]." & ClientConnName & ":" & vbCrLf, "XmlSentNotice")
-                Message.XAddXml(MessageText)
-                Message.XAddText(vbCrLf, "Normal") 'Add extra line
-                'SendMessage() 'This subroutine triggers the timer to send the message after a short delay.
-
-                'UPDATE 23Jul19 - Send Message on a new thread:
-                SendMessageParams.ProjectNetworkName = ClientProNetName
-                SendMessageParams.ConnectionName = ClientConnName
-                SendMessageParams.Message = MessageText
-                If bgwSendMessage.IsBusy Then
-                    Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
-                Else
-                    bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    'Run the received message:
+                    Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
+                    XDoc.LoadXml(XmlHeader & vbCrLf & Instructions.Replace("&", "&amp;")) 'Replace "&" with "&amp:" before loading the XML text.
+                'If ShowXMessages Then
+                '    Message.XAddXml(XDoc)  'Add the message to the XMessages window.
+                '    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                'End If
+                If (MsgType = "XMsg") And ShowXMessages Then
+                    Message.XAddXml(XDoc)  'Add the message to the XMessages window.
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                ElseIf (MsgType = "XSys") And ShowSysMessages Then
+                    Message.XAddXml(XDoc)  'Add the message to the XMessages window.
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
                 End If
+                XMsg.Run(XDoc, Status)
+                Catch ex As Exception
+                    Message.Add("Error running XMsg: " & ex.Message & vbCrLf)
+                End Try
+
+                'XMessage has been run.
+                'Reply to this message:
+                'Add the message reply to the XMessages window:
+                'Complete the MessageXDoc:
+                xmessage.Add(xlocns(xlocns.Count - 1)) 'Add the last location reply instructions to the message.
+                MessageXDoc.Add(xmessage)
+                MessageText = MessageXDoc.ToString
+
+                If ClientConnName = "" Then
+                'No client to send a message to - process the message locally.
+                'If ShowXMessages Then
+                '    Message.XAddText("Message processed locally:" & vbCrLf, "XmlSentNotice")
+                '    Message.XAddXml(MessageText)
+                '    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                'End If
+                If (MsgType = "XMsg") And ShowXMessages Then
+                    Message.XAddText("Message processed locally:" & vbCrLf, "XmlSentNotice")
+                    Message.XAddXml(MessageText)
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                ElseIf (MsgType = "XSys") And ShowSysMessages Then
+                    Message.XAddText("System Message processed locally:" & vbCrLf, "XmlSentNotice")
+                    Message.XAddXml(MessageText)
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                End If
+                ProcessLocalInstructions(MessageText)
+                Else
+                'If ShowXMessages Then
+                '    Message.XAddText("Message sent to [" & ClientProNetName & "]." & ClientConnName & ":" & vbCrLf, "XmlSentNotice")
+                '    Message.XAddXml(MessageText)
+                '    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                'End If
+                If (MsgType = "XMsg") And ShowXMessages Then
+                    Message.XAddText("Message sent to [" & ClientProNetName & "]." & ClientConnName & ":" & vbCrLf, "XmlSentNotice")   'NOTE: There is no SendMessage code in the Message Service application!
+                    Message.XAddXml(MessageText)
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                ElseIf (MsgType = "XSys") And ShowSysMessages Then
+                    Message.XAddText("System Message sent to [" & ClientProNetName & "]." & ClientConnName & ":" & vbCrLf, "XmlSentNotice")   'NOTE: There is no SendMessage code in the Message Service application!
+                    Message.XAddXml(MessageText)
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                End If
+
+                'Send Message on a new thread:
+                SendMessageParams.ProjectNetworkName = ClientProNetName
+                    SendMessageParams.ConnectionName = ClientConnName
+                    SendMessageParams.Message = MessageText
+                    If bgwSendMessage.IsBusy Then
+                        Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                    Else
+                        bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    End If
+                End If
+
+            Else 'This is not an XMessage!
+                If Instructions.StartsWith("<XMsgBlk>") Then 'This is an XMessageBlock.
+                'Process the received message:
+                Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
+                XDoc.LoadXml(XmlHeader & vbCrLf & Instructions.Replace("&", "&amp;")) 'Replace "&" with "&amp:" before loading the XML text.
+                If ShowXMessages Then
+                    Message.XAddXml(XDoc)   'Add the message to the XMessages window.
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                End If
+
+                'Process the XMessageBlock:
+                Dim XMsgBlkLocn As String
+                XMsgBlkLocn = XDoc.GetElementsByTagName("ClientLocn")(0).InnerText
+                Select Case XMsgBlkLocn
+                    Case "TestLocn" 'Replace this with the required location name.
+                        Dim XInfo As Xml.XmlNodeList = XDoc.GetElementsByTagName("XInfo") 'Get the XInfo node list
+                        Dim InfoXDoc As New Xml.Linq.XDocument 'Create an XDocument to hold the information contained in XInfo 
+                        InfoXDoc = XDocument.Parse("<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>" & vbCrLf & XInfo(0).InnerXml) 'Read the information into InfoXDoc
+                        'Add processing instructions here - The information in the InfoXDoc is usually stored in an XDocument in the application or as an XML file in the project.
+
+                    Case Else
+                        Message.AddWarning("Unknown XInfo Message location: " & XMsgBlkLocn & vbCrLf)
+                End Select
+            Else
+                Message.XAddText("The message is not an XMessage or XMessageBlock: " & vbCrLf & Instructions & vbCrLf & vbCrLf, "Normal")
             End If
-        Else 'This is not an XMessage!
-            Message.XAddText("The message is not an XMessage: " & Instructions & vbCrLf, "Normal")
+            'Message.XAddText("The message is not an XMessage: " & Instructions & vbCrLf, "Normal")
         End If
     End Sub
 
     Private Sub ProcessLocalInstructions(ByVal Instructions As String)
         'Process the XMessage instructions locally.
 
-        If Instructions.StartsWith("<XMsg>") Then 'This is an XMessage set of instructions.
-            'Run the received message:
-            Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
-            XDocLocal.LoadXml(XmlHeader & vbCrLf & Instructions)
-            XMsgLocal.Run(XDocLocal, StatusLocal)
-        Else 'This is not an XMessage!
-            Message.XAddText("The message is not an XMessage: " & Instructions & vbCrLf, "Normal")
+        'If Instructions.StartsWith("<XMsg>") Then 'This is an XMessage set of instructions.
+        If Instructions.StartsWith("<XMsg>") Or Instructions.StartsWith("<XSys>") Then 'This is an XMessage set of instructions.
+                'Run the received message:
+                Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
+                XDocLocal.LoadXml(XmlHeader & vbCrLf & Instructions)
+                XMsgLocal.Run(XDocLocal, StatusLocal)
+            Else 'This is not an XMessage!
+                Message.XAddText("The message is not an XMessage: " & Instructions & vbCrLf, "Normal")
         End If
     End Sub
+
+    Private _showXMessages As Boolean = True 'If True, XMessages that are sent or received will be shown in the Messages window.
+    Property ShowXMessages As Boolean
+        Get
+            Return _showXMessages
+        End Get
+        Set(value As Boolean)
+            _showXMessages = value
+        End Set
+    End Property
+
+    Private _showSysMessages As Boolean = True 'If True, System messages that are sent or received will be shown in the messages window.
+    Property ShowSysMessages As Boolean
+        Get
+            Return _showSysMessages
+        End Get
+        Set(value As Boolean)
+            _showSysMessages = value
+        End Set
+    End Property
+
 
     Private _closedFormNo As Integer 'Temporarily holds the number of the form that is being closed. 
     Property ClosedFormNo As Integer
@@ -367,16 +464,6 @@ Public Class Main
             _closedFormNo = value
         End Set
     End Property
-
-    'Private _startPageFileName As String = "" 'The file name of the html document displayed in the Start Page tab.
-    'Public Property StartPageFileName As String
-    '    Get
-    '        Return _startPageFileName
-    '    End Get
-    '    Set(value As String)
-    '        _startPageFileName = value
-    '    End Set
-    'End Property
 
     Private _workflowFileName As String = "" 'The file name of the html document displayed in the Workflow tab.
     Public Property WorkflowFileName As String
@@ -404,6 +491,8 @@ Public Class Main
                                <Height><%= Me.Height %></Height>
                                <AdvlNetworkAppPath><%= AdvlNetworkAppPath %></AdvlNetworkAppPath>
                                <AdvlNetworkExePath><%= AdvlNetworkExePath %></AdvlNetworkExePath>
+                               <ShowXMessages><%= ShowXMessages %></ShowXMessages>
+                               <ShowSysMessages><%= ShowSysMessages %></ShowSysMessages>
                                <!---->
                                <SelectedTabIndex><%= TabControl1.SelectedIndex %></SelectedTabIndex>
                            </FormSettings>
@@ -445,6 +534,9 @@ Public Class Main
             If Settings.<FormSettings>.<AdvlNetworkAppPath>.Value <> Nothing Then AdvlNetworkAppPath = Settings.<FormSettings>.<AdvlNetworkAppPath>.Value
             If Settings.<FormSettings>.<AdvlNetworkExePath>.Value <> Nothing Then AdvlNetworkExePath = Settings.<FormSettings>.<AdvlNetworkExePath>.Value
 
+            If Settings.<FormSettings>.<ShowXMessages>.Value <> Nothing Then ShowXMessages = Settings.<FormSettings>.<ShowXMessages>.Value
+            If Settings.<FormSettings>.<ShowSysMessages>.Value <> Nothing Then ShowSysMessages = Settings.<FormSettings>.<ShowSysMessages>.Value
+
             'Add code to read other saved setting here:
             If Settings.<FormSettings>.<SelectedTabIndex>.Value <> Nothing Then TabControl1.SelectedIndex = Settings.<FormSettings>.<SelectedTabIndex>.Value
 
@@ -453,10 +545,10 @@ Public Class Main
     End Sub
 
     Private Sub CheckFormPos()
-        'Chech that the form can be seen on a screen.
+        'Check that the form can be seen on a screen.
 
-        Dim MinWidthVisible As Integer = 48 'Minimum number of X pixels visible. The form will be moved if this many form pixels are not visible.
-        Dim MinHeightVisible As Integer = 48 'Minimum number of Y pixels visible. The form will be moved if this many form pixels are not visible.
+        Dim MinWidthVisible As Integer = 192 'Minimum number of X pixels visible. The form will be moved if this many form pixels are not visible.
+        Dim MinHeightVisible As Integer = 64 'Minimum number of Y pixels visible. The form will be moved if this many form pixels are not visible.
 
         Dim FormRect As New Rectangle(Me.Left, Me.Top, Me.Width, Me.Height)
         Dim WARect As Rectangle = Screen.GetWorkingArea(FormRect) 'The Working Area rectangle - the usable area of the screen containing the form.
@@ -494,6 +586,7 @@ Public Class Main
         Else
             'There is no Application_Info_ADVL_2.xml file.
             DefaultAppProperties() 'Create a new Application Info file with default application properties:
+            ApplicationInfo.WriteFile() 'Write the file now. The file information may be used by other applications.
         End If
     End Sub
 
@@ -812,6 +905,11 @@ Public Class Main
 
         'Read the Application Information file: ---------------------------------------------
         ApplicationInfo.ApplicationDir = My.Application.Info.DirectoryPath.ToString 'Set the Application Directory property
+        'Get the Application Version Information:
+        ApplicationInfo.Version.Major = My.Application.Info.Version.Major
+        ApplicationInfo.Version.Minor = My.Application.Info.Version.Minor
+        ApplicationInfo.Version.Build = My.Application.Info.Version.Build
+        ApplicationInfo.Version.Revision = My.Application.Info.Version.Revision
 
         If ApplicationInfo.ApplicationLocked Then
             MessageBox.Show("The application is locked. If the application is not already in use, remove the 'Application_Info.lock file from the application directory: " & ApplicationInfo.ApplicationDir, "Notice", MessageBoxButtons.OK)
@@ -834,10 +932,7 @@ Public Class Main
         ApplicationUsage.RestoreUsageInfo()
 
         'Restore Project information: -------------------------------------------------------
-        'Project.ApplicationName = ApplicationInfo.Name
         Project.Application.Name = ApplicationInfo.Name
-
-        'Project.ReadProjectInfoFile()
 
         'Set up Message object:
         Message.ApplicationName = ApplicationInfo.Name
@@ -851,7 +946,6 @@ Public Class Main
         Me.Show() 'Show this form before showing the Message form - This will show the App icon on top in the TaskBar.
 
         'Start showing messages here - Message system is set up.
-        'Message.AddText("------------------- Starting Application: ADVL Application Template ----------------- " & vbCrLf, "Heading")
         Message.AddText("------------------- Starting Application: ADVL Regression --------------------------- " & vbCrLf, "Heading")
         Message.AddText("Application usage: Total duration = " & Format(ApplicationUsage.TotalDuration.TotalHours, "#.##") & " hours" & vbCrLf, "Normal")
 
@@ -891,22 +985,6 @@ Public Class Main
                     Message.Add("Reading project info." & vbCrLf)
                     Project.ReadProjectInfoFile()                 'Read the file in the SettingsLocation: ADVL_Project_Info.xml
 
-                    'Project.ReadParameters()
-                    'Project.ReadParentParameters()
-                    'If Project.ParentParameterExists("AppNetName") Then
-                    '    Project.AddParameter("AppNetName", Project.ParentParameter("AppNetName").Value, Project.ParentParameter("AppNetName").Description) 'AddParameter will update the parameter if it already exists.
-                    '    AppNetName = Project.Parameter("AppNetName").Value
-                    'Else
-                    '    AppNetName = Project.GetParameter("AppNetName")
-                    'End If
-                    'If Project.ParentParameterExists("AppNetPath") Then 'Get the parent parameter value - it may have been updated.
-                    '    Project.AddParameter("AppNetPath", Project.ParentParameter("AppNetPath").Value, Project.ParentParameter("AppNetPath").Description) 'AddParameter will update the parameter if it already exists.
-                    '    AppNetPath = Project.Parameter("AppNetPath").Value
-                    'Else
-                    '    AppNetPath = Project.GetParameter("AppNetPath") 'If the parameter does not exist, the value is set to ""
-                    'End If
-                    'Project.SaveParameters() 'These should be saved now - child projects look for parent parameters in the parameter file.
-
                     Project.ReadParameters()
                     Project.ReadParentParameters()
                     If Project.ParentParameterExists("ProNetName") Then
@@ -943,22 +1021,6 @@ Public Class Main
                 Message.Add("Reading project info." & vbCrLf)
                 Project.ReadProjectInfoFile()  'Read the file in the Project Location: ADVL_Project_Info.xml
 
-                'Project.ReadParameters()
-                'Project.ReadParentParameters()
-                'If Project.ParentParameterExists("AppNetName") Then
-                '    Project.AddParameter("AppNetName", Project.ParentParameter("AppNetName").Value, Project.ParentParameter("AppNetName").Description) 'AddParameter will update the parameter if it already exists.
-                '    AppNetName = Project.Parameter("AppNetName").Value
-                'Else
-                '    AppNetName = Project.GetParameter("AppNetName") 'If the parameter does not exist, the value is set to ""
-                'End If
-                'If Project.ParentParameterExists("AppNetPath") Then 'Get the parent parameter value - it may have been updated.
-                '    Project.AddParameter("AppNetPath", Project.ParentParameter("AppNetPath").Value, Project.ParentParameter("AppNetPath").Description) 'AddParameter will update the parameter if it already exists.
-                '    AppNetPath = Project.Parameter("AppNetPath").Value
-                'Else
-                '    AppNetPath = Project.GetParameter("AppNetPath") 'If the parameter does not exist, the value is set to ""
-                'End If
-                'Project.SaveParameters() 'These should be saved now - child projects look for parent parameters in the parameter file.
-
                 Project.ReadParameters()
                 Project.ReadParentParameters()
                 If Project.ParentParameterExists("ProNetName") Then
@@ -985,21 +1047,6 @@ Public Class Main
             End If
 
         Else  'Project has been opened using Command Line arguments.
-            'Project.ReadParameters()
-            'Project.ReadParentParameters()
-            'If Project.ParentParameterExists("AppNetName") Then
-            '    Project.AddParameter("AppNetName", Project.ParentParameter("AppNetName").Value, Project.ParentParameter("AppNetName").Description) 'AddParameter will update the parameter if it already exists.
-            '    AppNetName = Project.Parameter("AppNetName").Value
-            'Else
-            '    AppNetName = Project.GetParameter("AppNetName")
-            'End If
-            'If Project.ParentParameterExists("AppNetPath") Then 'Get the parent parameter value - it may have been updated.
-            '    Project.AddParameter("AppNetPath", Project.ParentParameter("AppNetPath").Value, Project.ParentParameter("AppNetPath").Description) 'AddParameter will update the parameter if it already exists.
-            '    AppNetPath = Project.Parameter("AppNetPath").Value
-            'Else
-            '    AppNetPath = Project.GetParameter("AppNetPath") 'If the parameter does not exist, the value is set to ""
-            'End If
-            'Project.SaveParameters() 'These should be saved now - child projects look for parent parameters in the parameter file.
 
             Project.ReadParameters()
             Project.ReadParentParameters()
@@ -1020,7 +1067,6 @@ Public Class Main
             Project.LockProject() 'Lock the project while it is open in this application.
             ProjectSelected = False 'Reset the Project Selected flag.
 
-            'ADDED 12May19:
             'Set up the Message object:
             Message.SettingsLocn = Project.SettingsLocn
             Message.Show() 'Added 18May19
@@ -1042,6 +1088,8 @@ Public Class Main
         'END   Initialise the form: ---------------------------------------------------------------
 
         RestoreFormSettings() 'Restore the form settings
+        Message.ShowXMessages = ShowXMessages
+        Message.ShowSysMessages = ShowSysMessages
         RestoreProjectSettings() 'Restore the Project settings
 
         ShowProjectInfo() 'Show the project information.
@@ -1180,20 +1228,6 @@ Public Class Main
 
 #Region " Open and Close Forms - Code used to open and close other forms." '===================================================================================================================
 
-    'Private Sub btnOpenTemplateForm_Click(sender As Object, e As EventArgs) Handles btnOpenTemplateForm.Click
-    '    'Open the Template form:
-    '    If IsNothing(TemplateForm) Then
-    '        TemplateForm = New frmTemplate
-    '        TemplateForm.Show()
-    '    Else
-    '        TemplateForm.Show()
-    '    End If
-    'End Sub
-
-    'Private Sub TemplateForm_FormClosed(sender As Object, e As FormClosedEventArgs) Handles TemplateForm.FormClosed
-    '    TemplateForm = Nothing
-    'End Sub
-
     Private Sub btnMessages_Click(sender As Object, e As EventArgs) Handles btnMessages.Click
         'Show the Messages form.
         Message.ApplicationName = ApplicationInfo.Name
@@ -1326,42 +1360,38 @@ Public Class Main
         End If
     End Sub
 
-    Public Sub OpenWebPage(ByVal FileName As String)
-        'Open the web page with the specified File Name.
+    'Public Sub OpenWebPage(ByVal FileName As String)
+    '    'Open the web page with the specified File Name.
 
-        If FileName = "" Then
+    '    If FileName = "" Then
 
-        Else
-            'First check if the HTML file is already open:
-            Dim FileFound As Boolean = False
-            If WebPageFormList.Count = 0 Then
+    '    Else
+    '        'First check if the HTML file is already open:
+    '        Dim FileFound As Boolean = False
+    '        If WebPageFormList.Count = 0 Then
 
-            Else
-                Dim I As Integer
-                For I = 0 To WebPageFormList.Count - 1
-                    If WebPageFormList(I) Is Nothing Then
+    '        Else
+    '            Dim I As Integer
+    '            For I = 0 To WebPageFormList.Count - 1
+    '                If WebPageFormList(I) Is Nothing Then
 
-                    Else
-                        If WebPageFormList(I).FileName = FileName Then
-                            FileFound = True
-                            WebPageFormList(I).BringToFront
-                        End If
-                    End If
-                Next
-            End If
+    '                Else
+    '                    If WebPageFormList(I).FileName = FileName Then
+    '                        FileFound = True
+    '                        WebPageFormList(I).BringToFront
+    '                    End If
+    '                End If
+    '            Next
+    '        End If
 
-            If FileFound = False Then
-                Dim FormNo As Integer = OpenNewWebPage()
-                WebPageFormList(FormNo).FileName = FileName
-                WebPageFormList(FormNo).OpenDocument
-                WebPageFormList(FormNo).BringToFront
-            End If
-        End If
-    End Sub
-
-
-
-
+    '        If FileFound = False Then
+    '            Dim FormNo As Integer = OpenNewWebPage()
+    '            WebPageFormList(FormNo).FileName = FileName
+    '            WebPageFormList(FormNo).OpenDocument
+    '            WebPageFormList(FormNo).BringToFront
+    '        End If
+    '    End If
+    'End Sub
 
 
     Private Sub btnLinearRegr_Click(sender As Object, e As EventArgs) Handles btnLinearRegr.Click
@@ -1466,33 +1496,15 @@ Public Class Main
         'Open the StartPage.html file and display in the Workflow tab.
 
         If Project.DataFileExists("StartPage.html") Then
-            'StartPageFileName = "StartPage.html"
             WorkflowFileName = "StartPage.html"
-            'DisplayStartPage()
             DisplayWorkflow()
         Else
             CreateStartPage()
-            'StartPageFileName = "StartPage.html"
             WorkflowFileName = "StartPage.html"
-            'DisplayStartPage()
             DisplayWorkflow()
         End If
 
     End Sub
-
-    'Public Sub DisplayStartPage()
-    '    'Display the StartPage.html file in the Start Page tab.
-
-    '    If Project.DataFileExists(StartPageFileName) Then
-    '        Dim rtbData As New IO.MemoryStream
-    '        Project.ReadData(StartPageFileName, rtbData)
-    '        rtbData.Position = 0
-    '        Dim sr As New IO.StreamReader(rtbData)
-    '        WebBrowser1.DocumentText = sr.ReadToEnd()
-    '    Else
-    '        Message.AddWarning("Web page file not found: " & StartPageFileName & vbCrLf)
-    '    End If
-    'End Sub
 
     Public Sub DisplayWorkflow()
         'Display the StartPage.html file in the Start Page tab.
@@ -1529,6 +1541,7 @@ Public Class Main
         sb.Append("<html>" & vbCrLf)
         sb.Append("<head>" & vbCrLf)
         sb.Append("<title>" & DocumentTitle & "</title>" & vbCrLf)
+        sb.Append("<meta name=""description"" content=""Application information."">" & vbCrLf)
         sb.Append("</head>" & vbCrLf)
 
         sb.Append("<body style=""font-family:arial;"">" & vbCrLf & vbCrLf)
@@ -1680,8 +1693,13 @@ Public Class Main
 
         sb.Append("<!DOCTYPE html>" & vbCrLf)
         sb.Append("<html>" & vbCrLf)
+        sb.Append("<!-- Andorville(TM) Workflow File -->" & vbCrLf)
+        sb.Append("<!-- Application Name:    " & ApplicationInfo.Name & " -->" & vbCrLf)
+        sb.Append("<!-- Application Version: " & My.Application.Info.Version.ToString & " -->" & vbCrLf)
+        sb.Append("<!-- Creation Date:          " & Format(Now, "dd MMMM yyyy") & " -->" & vbCrLf)
         sb.Append("<head>" & vbCrLf)
         sb.Append("<title>" & DocumentTitle & "</title>" & vbCrLf)
+        sb.Append("<meta name=""description"" content=""Workflow description."">" & vbCrLf)
         sb.Append("</head>" & vbCrLf)
 
         sb.Append("<body style=""font-family:arial;"">" & vbCrLf & vbCrLf)
@@ -1821,147 +1839,57 @@ Public Class Main
     'These methods are used to display HTML pages in the Document tab.
     'The same methods can be found in the WebView form, which displays web pages on seprate forms.
 
-    Public Sub JSMethodTest1()
-        'Test method that is called from JavaScript.
-        Message.Add("JSMethodTest1 called OK." & vbCrLf)
-    End Sub
 
-    Public Sub JSMethodTest2(ByVal Var1 As String, ByVal Var2 As String)
-        'Test method that is called from JavaScript.
-        Message.Add("Var1 = " & Var1 & " Var2 = " & Var2 & vbCrLf)
-    End Sub
-
-    Public Sub JSDisplayXml(ByRef XDoc As XDocument)
-        Message.Add(XDoc.ToString & vbCrLf & vbCrLf)
-    End Sub
-
-    Public Sub ShowMessage(ByVal Msg As String)
-        Message.Add(Msg)
-    End Sub
-
-    Public Sub SaveHtmlSettings(ByVal xSettings As String, ByVal FileName As String)
-        'Save the Html settings for a web page.
-
-        'Convert the XSettings to XML format:
-
-        Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
-
-        Dim XDocSettings As New System.Xml.Linq.XDocument
-
-        Try
-            XDocSettings = System.Xml.Linq.XDocument.Parse(XmlHeader & vbCrLf & xSettings)
-        Catch ex As Exception
-            Message.AddWarning("Error saving HTML settings file. " & ex.Message & vbCrLf)
-        End Try
-
-        Project.SaveXmlData(FileName, XDocSettings)
-
-    End Sub
-
-
-    Public Sub RestoreHtmlSettings()
-        'Restore the Html settings for a web page.
-
-        'Dim SettingsFileName As String = StartPageFileName & "Settings"
-        Dim SettingsFileName As String = WorkflowFileName & "Settings"
-
-        Dim XDocSettings As New System.Xml.Linq.XDocument
-        Project.ReadXmlData(SettingsFileName, XDocSettings)
-
-        If XDocSettings Is Nothing Then
-            'Message.Add("No HTML Settings file : " & SettingsFileName & vbCrLf)
-        Else
-            Dim XSettings As New System.Xml.XmlDocument
-            Try
-                XSettings.LoadXml(XDocSettings.ToString)
-                'Run the Settings file:
-                XSeq.RunXSequence(XSettings, Status)
-            Catch ex As Exception
-                Message.AddWarning("Error restoring HTML settings. " & ex.Message & vbCrLf)
-            End Try
-        End If
-    End Sub
-
-    Private Sub XSeq_ErrorMsg(ErrMsg As String) Handles XSeq.ErrorMsg
-        Message.AddWarning(ErrMsg & vbCrLf)
-    End Sub
-
-
-    Private Sub XSeq_Instruction(Info As String, Locn As String) Handles XSeq.Instruction
-        'Execute each instruction produced by running the XSeq file.
-
-        Select Case Locn
-            Case "Settings:Form:Name"
-                FormName = Info
-
-            Case "Settings:Form:Item:Name"
-                ItemName = Info
-
-            Case "Settings:Form:Item:Value"
-                RestoreSetting(FormName, ItemName, Info)
-
-            Case "Settings:Form:SelectId"
-                SelectId = Info
-
-            Case "Settings:Form:OptionText"
-                RestoreOption(SelectId, Info)
-
-            Case "Settings"
-
-            Case "EndOfSequence"
-                'Main.Message.Add("End of processing sequence" & Info & vbCrLf)
-
-            Case Else
-                Message.AddWarning("Unknown location: " & Locn & "  Info: " & Info & vbCrLf)
-
-        End Select
-    End Sub
-
-
-    Public Sub RestoreSetting(ByVal FormName As String, ByVal ItemName As String, ByVal ItemValue As String)
-        'Restore the setting value with the specified Form Name and Item Name.
-
-        Me.WebBrowser1.Document.InvokeScript("RestoreSetting", New String() {FormName, ItemName, ItemValue})
-
-    End Sub
-
-    Public Sub RestoreOption(ByVal SelectId As String, ByVal OptionText As String)
-        'Restore the Option text in the Select control with the Id SelectId.
-
-        Me.WebBrowser1.Document.InvokeScript("RestoreOption", New String() {SelectId, OptionText})
-    End Sub
-
-    Private Sub SaveWebPageSettings()
-        'Call the SaveSettings JavaScript function:
-        Try
-            Me.WebBrowser1.Document.InvokeScript("SaveSettings")
-        Catch ex As Exception
-            Message.AddWarning("Web page settings not saved: " & ex.Message & vbCrLf)
-        End Try
-
-    End Sub
-
-    Public Function GetFormNo() As String
-        'Return FormNo.ToString
-        Return "-1"
-    End Function
-
-    Public Sub AddText(ByVal Msg As String, ByVal TextType As String)
-        Message.AddText(Msg, TextType)
-    End Sub
+    'Display Messages ==============================================================================================
 
     Public Sub AddMessage(ByVal Msg As String)
+        'Add a normal text message to the Message window.
         Message.Add(Msg)
     End Sub
 
     Public Sub AddWarning(ByVal Msg As String)
+        'Add a warning text message to the Message window.
         Message.AddWarning(Msg)
     End Sub
 
+    Public Sub AddTextTypeMessage(ByVal Msg As String, ByVal TextType As String)
+        'Add a message with the specified Text Type to the Message window.
+        Message.AddText(Msg, TextType)
+    End Sub
 
-    Public Sub SendXMessage(ByVal ConnName As String, ByVal XMsg As String)
-        'Send the XMessage to the application with the connection name ConnName.
+    Public Sub AddXmlMessage(ByVal XmlText As String)
+        'Add an Xml message to the Message window.
+        Message.AddXml(XmlText)
+    End Sub
 
+    'END Display Messages ------------------------------------------------------------------------------------------
+
+
+    'Run an XSequence ==============================================================================================
+
+    Public Sub RunClipboardXSeq()
+        'Run the XSequence instructions in the clipboard.
+
+        Dim XDocSeq As System.Xml.Linq.XDocument
+        Try
+            XDocSeq = XDocument.Parse(My.Computer.Clipboard.GetText)
+        Catch ex As Exception
+            Message.AddWarning("Error reading Clipboard data. " & ex.Message & vbCrLf)
+            Exit Sub
+        End Try
+
+        If IsNothing(XDocSeq) Then
+            Message.Add("No XSequence instructions were found in the clipboard.")
+        Else
+            Dim XmlSeq As New System.Xml.XmlDocument
+            Try
+                XmlSeq.LoadXml(XDocSeq.ToString) 'Convert XDocSeq to an XmlDocument to process with XSeq.
+                'Run the sequence:
+                XSeq.RunXSequence(XmlSeq, Status)
+            Catch ex As Exception
+                Message.AddWarning("Error restoring HTML settings. " & ex.Message & vbCrLf)
+            End Try
+        End If
     End Sub
 
     Public Sub RunXSequence(ByVal XSequence As String)
@@ -1969,9 +1897,223 @@ Public Class Main
         Dim XmlSeq As New System.Xml.XmlDocument
         XmlSeq.LoadXml(XSequence)
         XSeq.RunXSequence(XmlSeq, Status)
-
     End Sub
 
+    Private Sub XSeq_ErrorMsg(ErrMsg As String) Handles XSeq.ErrorMsg
+        Message.AddWarning(ErrMsg & vbCrLf)
+    End Sub
+
+
+    Private Sub XSeq_Instruction(Data As String, Locn As String) Handles XSeq.Instruction
+        'Execute each instruction produced by running the XSeq file.
+
+        Select Case Locn
+            Case "Settings:Form:Name"
+                FormName = Data
+
+            Case "Settings:Form:Item:Name"
+                ItemName = Data
+
+            Case "Settings:Form:Item:Value"
+                RestoreSetting(FormName, ItemName, Data)
+
+            Case "Settings:Form:SelectId"
+                SelectId = Data
+
+            Case "Settings:Form:OptionText"
+                RestoreOption(SelectId, Data)
+
+            Case "Settings"
+
+            Case "EndOfSequence"
+                'Main.Message.Add("End of processing sequence" & Data & vbCrLf)
+
+            Case Else
+                Message.AddWarning("Unknown location: " & Locn & "  Data: " & Data & vbCrLf)
+
+        End Select
+    End Sub
+
+    'END Run an XSequence ------------------------------------------------------------------------------------------
+
+
+    'Run an XMessage ===============================================================================================
+
+    Public Sub RunXMessage(ByVal XMsg As String)
+        'Run the XMessage by sending it to InstrReceived.
+        InstrReceived = XMsg
+    End Sub
+
+    Public Sub SendXMessage(ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMessage to the application with the connection name ConnName.
+        If IsNothing(client) Then
+            Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If client.State = ServiceModel.CommunicationState.Faulted Then
+                Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                If bgwSendMessage.IsBusy Then
+                    Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                Else
+                    Dim SendMessageParams As New Main.clsSendMessageParams
+                    SendMessageParams.ProjectNetworkName = ProNetName
+                    SendMessageParams.ConnectionName = ConnName
+                    SendMessageParams.Message = XMsg
+                    bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    If ShowXMessages Then
+                        Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                        Message.XAddXml(XMsg)
+                        Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                    End If
+                End If
+            End If
+        End If
+    End Sub
+
+    Public Sub SendXMessageExt(ByVal ProNetName As String, ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName and Project Network Name ProNetname.
+        'This version can send the XMessage to a connection external to the current Project Network.
+        If IsNothing(client) Then
+            Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If client.State = ServiceModel.CommunicationState.Faulted Then
+                Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                If bgwSendMessage.IsBusy Then
+                    Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                Else
+                    Dim SendMessageParams As New Main.clsSendMessageParams
+                    SendMessageParams.ProjectNetworkName = ProNetName
+                    SendMessageParams.ConnectionName = ConnName
+                    SendMessageParams.Message = XMsg
+                    bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    If ShowXMessages Then
+                        Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                        Message.XAddXml(XMsg)
+                        Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                    End If
+                End If
+            End If
+        End If
+    End Sub
+
+    Public Sub SendXMessageWait(ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName.
+        'Wait for the connection to be made.
+        If IsNothing(client) Then
+            Message.Add("No client connection available!" & vbCrLf)
+        Else
+            Try
+                'Application.DoEvents() 'TRY THE METHOD WITHOUT THE DOEVENTS
+                If client.State = ServiceModel.CommunicationState.Faulted Then
+                    Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+                Else
+                    Dim StartTime As Date = Now
+                    Dim Duration As TimeSpan
+                    'Wait up to 16 seconds for the connection ConnName to be established
+                    While client.ConnectionExists(ProNetName, ConnName) = False 'Wait until the required connection is made.
+                        System.Threading.Thread.Sleep(1000) 'Pause for 1000ms
+                        Duration = Now - StartTime
+                        If Duration.Seconds > 16 Then Exit While
+                    End While
+
+                    If client.ConnectionExists(ProNetName, ConnName) = False Then
+                        Message.AddWarning("Connection not available: " & ConnName & " in application network: " & ProNetName & vbCrLf)
+                    Else
+                        If bgwSendMessage.IsBusy Then
+                            Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                        Else
+                            Dim SendMessageParams As New Main.clsSendMessageParams
+                            SendMessageParams.ProjectNetworkName = ProNetName
+                            SendMessageParams.ConnectionName = ConnName
+                            SendMessageParams.Message = XMsg
+                            bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                            If ShowXMessages Then
+                                Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                                Message.XAddXml(XMsg)
+                                Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                            End If
+                        End If
+                    End If
+                End If
+            Catch ex As Exception
+                Message.AddWarning(ex.Message & vbCrLf)
+            End Try
+        End If
+    End Sub
+
+    Public Sub SendXMessageExtWait(ByVal ProNetName As String, ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName and Project Network Name ProNetName.
+        'Wait for the connection to be made.
+        'This version can send the XMessage to a connection external to the current Project Network.
+        If IsNothing(client) Then
+            Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If client.State = ServiceModel.CommunicationState.Faulted Then
+                Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                Dim StartTime As Date = Now
+                Dim Duration As TimeSpan
+                'Wait up to 16 seconds for the connection ConnName to be established
+                While client.ConnectionExists(ProNetName, ConnName) = False
+                    System.Threading.Thread.Sleep(1000) 'Pause for 1000ms
+                    Duration = Now - StartTime
+                    If Duration.Seconds > 16 Then Exit While
+                End While
+
+                If client.ConnectionExists(ProNetName, ConnName) = False Then
+                    Message.AddWarning("Connection not available: " & ConnName & " in application network: " & ProNetName & vbCrLf)
+                Else
+                    If bgwSendMessage.IsBusy Then
+                        Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                    Else
+                        Dim SendMessageParams As New Main.clsSendMessageParams
+                        SendMessageParams.ProjectNetworkName = ProNetName
+                        SendMessageParams.ConnectionName = ConnName
+                        SendMessageParams.Message = XMsg
+                        bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                        If ShowXMessages Then
+                            Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                            Message.XAddXml(XMsg)
+                            Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    End Sub
+
+    Public Sub XMsgInstruction(ByVal Info As String, ByVal Locn As String)
+        'Send the XMessage Instruction to the JavaScript function XMsgInstruction for processing.
+        Me.WebBrowser1.Document.InvokeScript("XMsgInstruction", New String() {Info, Locn})
+    End Sub
+
+    'END Run an XMessage -------------------------------------------------------------------------------------------
+
+
+    'Get Information ===============================================================================================
+
+    Public Function GetFormNo() As String
+        'Return the Form Number of the current instance of the WebPage form.
+        'Return FormNo.ToString
+        Return "-1"
+    End Function
+
+    Public Function GetParentFormNo() As String
+        'Return the Form Number of the Parent Form (that called this form).
+        'Return ParentWebPageFormNo.ToString
+        Return "-1" 'The Main Form does not have a Parent Web Page.
+    End Function
+
+    Public Function GetConnectionName() As String
+        'Return the Connection Name of the Project.
+        Return ConnectionName
+    End Function
+
+    Public Function GetProNetName() As String
+        'Return the Project Network Name of the Project.
+        Return ProNetName
+    End Function
 
     Public Sub ParentProjectName(ByVal FormName As String, ByVal ItemName As String)
         'Return the Parent Project name:
@@ -1993,15 +2135,266 @@ Public Class Main
         RestoreSetting(FormName, ItemName, Project.Parameter(ParameterName).Value)
     End Sub
 
-    'Public Sub ApplicationNetworkName(ByVal FormName As String, ByVal ItemName As String)
-    '    'Return the name of the Application Network:
-    '    RestoreSetting(FormName, ItemName, Project.Parameter("AppNetName").Value)
-    'End Sub
-
     Public Sub ProjectNetworkName(ByVal FormName As String, ByVal ItemName As String)
         'Return the name of the Application Network:
         RestoreSetting(FormName, ItemName, Project.Parameter("ProNetName").Value)
     End Sub
+
+    'END Get Information -------------------------------------------------------------------------------------------
+
+
+    'Open a Web Page ===============================================================================================
+
+    Public Sub OpenWebPage(ByVal FileName As String)
+        'Open the web page with the specified File Name.
+
+        If FileName = "" Then
+
+        Else
+            'First check if the HTML file is already open:
+            Dim FileFound As Boolean = False
+            If WebPageFormList.Count = 0 Then
+
+            Else
+                Dim I As Integer
+                For I = 0 To WebPageFormList.Count - 1
+                    If WebPageFormList(I) Is Nothing Then
+
+                    Else
+                        If WebPageFormList(I).FileName = FileName Then
+                            FileFound = True
+                            WebPageFormList(I).BringToFront
+                        End If
+                    End If
+                Next
+            End If
+
+            If FileFound = False Then
+                Dim FormNo As Integer = OpenNewWebPage()
+                WebPageFormList(FormNo).FileName = FileName
+                WebPageFormList(FormNo).OpenDocument
+                WebPageFormList(FormNo).BringToFront
+            End If
+        End If
+    End Sub
+
+    'END Open a Web Page -------------------------------------------------------------------------------------------
+
+
+    'Open and Close Projects =======================================================================================
+
+    Public Sub OpenProjectAtRelativePath(ByVal RelativePath As String, ByVal ConnectionName As String)
+        'Open the Project at the specified Relative Path using the specified Connection Name.
+
+        Dim ProjectPath As String
+        If RelativePath.StartsWith("\") Then
+            ProjectPath = Project.Path & RelativePath
+            client.StartProjectAtPath(ProjectPath, ConnectionName)
+        Else
+            ProjectPath = Project.Path & "\" & RelativePath
+            client.StartProjectAtPath(ProjectPath, ConnectionName)
+        End If
+    End Sub
+
+    Public Sub CheckOpenProjectAtRelativePath(ByVal RelativePath As String, ByVal ConnectionName As String)
+        'Check if the project at the specified Relative Path is open.
+        'Open it if it is not already open.
+        'Open the Project at the specified Relative Path using the specified Connection Name.
+
+        Dim ProjectPath As String
+        If RelativePath.StartsWith("\") Then
+            ProjectPath = Project.Path & RelativePath
+            If client.ProjectOpen(ProjectPath) Then
+                'Project is already open.
+            Else
+                client.StartProjectAtPath(ProjectPath, ConnectionName)
+            End If
+        Else
+            ProjectPath = Project.Path & "\" & RelativePath
+            If client.ProjectOpen(ProjectPath) Then
+                'Project is already open.
+            Else
+                client.StartProjectAtPath(ProjectPath, ConnectionName)
+            End If
+        End If
+    End Sub
+
+    Public Sub OpenProjectAtProNetPath(ByVal RelativePath As String, ByVal ConnectionName As String)
+        'Open the Project at the specified Path (relative to the Project Network Path) using the specified Connection Name.
+
+        Dim ProjectPath As String
+        If RelativePath.StartsWith("\") Then
+            If Project.ParameterExists("ProNetPath") Then
+                ProjectPath = Project.GetParameter("ProNetPath") & RelativePath
+                client.StartProjectAtPath(ProjectPath, ConnectionName)
+            Else
+                Message.AddWarning("The Project Network Path is not known." & vbCrLf)
+            End If
+        Else
+            If Project.ParameterExists("ProNetPath") Then
+                ProjectPath = Project.GetParameter("ProNetPath") & "\" & RelativePath
+                client.StartProjectAtPath(ProjectPath, ConnectionName)
+            Else
+                Message.AddWarning("The Project Network Path is not known." & vbCrLf)
+            End If
+        End If
+    End Sub
+
+    Public Sub CheckOpenProjectAtProNetPath(ByVal RelativePath As String, ByVal ConnectionName As String)
+        'Check if the project at the specified Path (relative to the Project Network Path) is open.
+        'Open it if it is not already open.
+        'Open the Project at the specified Path using the specified Connection Name.
+
+        Dim ProjectPath As String
+        If RelativePath.StartsWith("\") Then
+            If Project.ParameterExists("ProNetPath") Then
+                ProjectPath = Project.GetParameter("ProNetPath") & RelativePath
+                'client.StartProjectAtPath(ProjectPath, ConnectionName)
+                If client.ProjectOpen(ProjectPath) Then
+                    'Project is already open.
+                Else
+                    client.StartProjectAtPath(ProjectPath, ConnectionName)
+                End If
+            Else
+                Message.AddWarning("The Project Network Path is not known." & vbCrLf)
+            End If
+        Else
+            If Project.ParameterExists("ProNetPath") Then
+                ProjectPath = Project.GetParameter("ProNetPath") & "\" & RelativePath
+                'client.StartProjectAtPath(ProjectPath, ConnectionName)
+                If client.ProjectOpen(ProjectPath) Then
+                    'Project is already open.
+                Else
+                    client.StartProjectAtPath(ProjectPath, ConnectionName)
+                End If
+            Else
+                Message.AddWarning("The Project Network Path is not known." & vbCrLf)
+            End If
+        End If
+    End Sub
+
+    Public Sub CloseProjectAtConnection(ByVal ProNetName As String, ByVal ConnectionName As String)
+        'Close the Project at the specified connection.
+
+        If IsNothing(client) Then
+            Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If client.State = ServiceModel.CommunicationState.Faulted Then
+                Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                'Create the XML instructions to close the application at the connection.
+                Dim decl As New XDeclaration("1.0", "utf-8", "yes")
+                Dim doc As New XDocument(decl, Nothing) 'Create an XDocument to store the instructions.
+                Dim xmessage As New XElement("XMsg") 'This indicates the start of the message in the XMessage class
+
+                'NOTE: No reply expected. No need to provide the following client information(?)
+                'Dim clientConnName As New XElement("ClientConnectionName", Me.ConnectionName)
+                'xmessage.Add(clientConnName)
+
+                Dim command As New XElement("Command", "Close")
+                xmessage.Add(command)
+                doc.Add(xmessage)
+
+                'Show the message sent to AppNet:
+                Message.XAddText("Message sent to: [" & ProNetName & "]." & ConnectionName & ":" & vbCrLf, "XmlSentNotice")
+                Message.XAddXml(doc.ToString)
+                Message.XAddText(vbCrLf, "Normal") 'Add extra line
+
+                client.SendMessage(ProNetName, ConnectionName, doc.ToString)
+            End If
+        End If
+    End Sub
+
+    'END Open and Close Projects -----------------------------------------------------------------------------------
+
+
+    'System Methods ================================================================================================
+
+    Public Sub SaveHtmlSettings(ByVal xSettings As String, ByVal FileName As String)
+        'Save the Html settings for a web page.
+
+        'Convert the XSettings to XML format:
+        Dim XmlHeader As String = "<?xml version=""1.0"" encoding=""utf-8"" standalone=""yes""?>"
+        Dim XDocSettings As New System.Xml.Linq.XDocument
+
+        Try
+            XDocSettings = System.Xml.Linq.XDocument.Parse(XmlHeader & vbCrLf & xSettings)
+        Catch ex As Exception
+            Message.AddWarning("Error saving HTML settings file. " & ex.Message & vbCrLf)
+        End Try
+
+        Project.SaveXmlData(FileName, XDocSettings)
+    End Sub
+
+
+    Public Sub RestoreHtmlSettings()
+        'Restore the Html settings for a web page.
+
+        Dim SettingsFileName As String = WorkflowFileName & "Settings"
+        Dim XDocSettings As New System.Xml.Linq.XDocument
+        Project.ReadXmlData(SettingsFileName, XDocSettings)
+
+        If XDocSettings Is Nothing Then
+            'Message.Add("No HTML Settings file : " & SettingsFileName & vbCrLf)
+        Else
+            Dim XSettings As New System.Xml.XmlDocument
+            Try
+                XSettings.LoadXml(XDocSettings.ToString)
+                'Run the Settings file:
+                XSeq.RunXSequence(XSettings, Status)
+            Catch ex As Exception
+                Message.AddWarning("Error restoring HTML settings. " & ex.Message & vbCrLf)
+            End Try
+        End If
+    End Sub
+
+    Public Sub RestoreSetting(ByVal FormName As String, ByVal ItemName As String, ByVal ItemValue As String)
+        'Restore the setting value with the specified Form Name and Item Name.
+        Me.WebBrowser1.Document.InvokeScript("RestoreSetting", New String() {FormName, ItemName, ItemValue})
+    End Sub
+
+    Public Sub RestoreOption(ByVal SelectId As String, ByVal OptionText As String)
+        'Restore the Option text in the Select control with the Id SelectId.
+        Me.WebBrowser1.Document.InvokeScript("RestoreOption", New String() {SelectId, OptionText})
+    End Sub
+
+    Private Sub SaveWebPageSettings()
+        'Call the SaveSettings JavaScript function:
+        Try
+            Me.WebBrowser1.Document.InvokeScript("SaveSettings")
+        Catch ex As Exception
+            Message.AddWarning("Web page settings not saved: " & ex.Message & vbCrLf)
+        End Try
+    End Sub
+
+    'END System Methods --------------------------------------------------------------------------------------------
+
+
+    'Legacy Code (These methods should no longer be used) ==========================================================
+
+    Public Sub JSMethodTest1()
+        'Test method that is called from JavaScript.
+        Message.Add("JSMethodTest1 called OK." & vbCrLf)
+    End Sub
+
+    Public Sub JSMethodTest2(ByVal Var1 As String, ByVal Var2 As String)
+        'Test method that is called from JavaScript.
+        Message.Add("Var1 = " & Var1 & " Var2 = " & Var2 & vbCrLf)
+    End Sub
+
+    Public Sub JSDisplayXml(ByRef XDoc As XDocument)
+        Message.Add(XDoc.ToString & vbCrLf & vbCrLf)
+    End Sub
+
+    Public Sub ShowMessage(ByVal Msg As String)
+        Message.Add(Msg)
+    End Sub
+
+    Public Sub AddText(ByVal Msg As String, ByVal TextType As String)
+        Message.AddText(Msg, TextType)
+    End Sub
+
+    'END Legacy Code -----------------------------------------------------------------------------------------------
 
 #End Region 'Methods Called by JavaScript -------------------------------------------------------------------------------------------------------------------------------
 
@@ -2025,6 +2418,7 @@ Public Class Main
         Project.Usage.SaveUsageInfo() 'Save the current project usage information.
         'ClearCurrentProjectData()  'Clear the current project data before opening another project.
         Project.UnlockProject() 'Unlock the current project before it Is closed.
+        If ConnectedToComNet Then DisconnectFromComNet()
     End Sub
 
     Private Sub Project_Selected() Handles Project.Selected
@@ -2032,15 +2426,6 @@ Public Class Main
 
         RestoreFormSettings()
         Project.ReadProjectInfoFile()
-
-        'Project.ReadParameters()
-        'Project.ReadParentParameters()
-        'If Project.ParentParameterExists("AppNetName") Then
-        '    Project.AddParameter("AppNetName", Project.ParentParameter("AppNetName").Value, Project.ParentParameter("AppNetName").Description) 'AddParameter will update the parameter if it already exists.
-        '    AppNetName = Project.Parameter("AppNetName").Value
-        'Else
-        '    AppNetName = Project.GetParameter("AppNetName")
-        'End If
 
         Project.ReadParameters()
         Project.ReadParentParameters()
@@ -2069,36 +2454,46 @@ Public Class Main
         'Restore the new project settings:
         RestoreProjectSettings() 'Update this subroutine if project settings need to be restored.
 
-        'Show the project information:
-        txtProjectName.Text = Project.Name
-        txtProjectDescription.Text = Project.Description
-        Select Case Project.Type
-            Case ADVL_Utilities_Library_1.Project.Types.Directory
-                txtProjectType.Text = "Directory"
-            Case ADVL_Utilities_Library_1.Project.Types.Archive
-                txtProjectType.Text = "Archive"
-            Case ADVL_Utilities_Library_1.Project.Types.Hybrid
-                txtProjectType.Text = "Hybrid"
-            Case ADVL_Utilities_Library_1.Project.Types.None
-                txtProjectType.Text = "None"
-        End Select
+        ShowProjectInfo()
 
-        txtCreationDate.Text = Format(Project.CreationDate, "d-MMM-yyyy H:mm:ss")
-        txtLastUsed.Text = Format(Project.Usage.LastUsed, "d-MMM-yyyy H:mm:ss")
-        Select Case Project.SettingsLocn.Type
-            Case ADVL_Utilities_Library_1.FileLocation.Types.Directory
-                txtSettingsLocationType.Text = "Directory"
-            Case ADVL_Utilities_Library_1.FileLocation.Types.Archive
-                txtSettingsLocationType.Text = "Archive"
-        End Select
-        txtSettingsPath.Text = Project.SettingsLocn.Path
-        Select Case Project.DataLocn.Type
-            Case ADVL_Utilities_Library_1.FileLocation.Types.Directory
-                txtDataLocationType.Text = "Directory"
-            Case ADVL_Utilities_Library_1.FileLocation.Types.Archive
-                txtDataLocationType.Text = "Archive"
-        End Select
-        txtDataPath.Text = Project.DataLocn.Path
+        ''Show the project information:
+        'txtProjectName.Text = Project.Name
+        'txtProjectDescription.Text = Project.Description
+        'Select Case Project.Type
+        '    Case ADVL_Utilities_Library_1.Project.Types.Directory
+        '        txtProjectType.Text = "Directory"
+        '    Case ADVL_Utilities_Library_1.Project.Types.Archive
+        '        txtProjectType.Text = "Archive"
+        '    Case ADVL_Utilities_Library_1.Project.Types.Hybrid
+        '        txtProjectType.Text = "Hybrid"
+        '    Case ADVL_Utilities_Library_1.Project.Types.None
+        '        txtProjectType.Text = "None"
+        'End Select
+
+        'txtCreationDate.Text = Format(Project.CreationDate, "d-MMM-yyyy H:mm:ss")
+        'txtLastUsed.Text = Format(Project.Usage.LastUsed, "d-MMM-yyyy H:mm:ss")
+        'Select Case Project.SettingsLocn.Type
+        '    Case ADVL_Utilities_Library_1.FileLocation.Types.Directory
+        '        txtSettingsLocationType.Text = "Directory"
+        '    Case ADVL_Utilities_Library_1.FileLocation.Types.Archive
+        '        txtSettingsLocationType.Text = "Archive"
+        'End Select
+        'txtSettingsPath.Text = Project.SettingsLocn.Path
+        'Select Case Project.DataLocn.Type
+        '    Case ADVL_Utilities_Library_1.FileLocation.Types.Directory
+        '        txtDataLocationType.Text = "Directory"
+        '    Case ADVL_Utilities_Library_1.FileLocation.Types.Archive
+        '        txtDataLocationType.Text = "Archive"
+        'End Select
+        'txtDataPath.Text = Project.DataLocn.Path
+
+        If Project.ConnectOnOpen Then
+            ConnectToComNet() 'The Project is set to connect when it is opened.
+        ElseIf ApplicationInfo.ConnectOnStartup Then
+            ConnectToComNet() 'The Application is set to connect when it is started.
+        Else
+            'Don't connect to ComNet.
+        End If
 
     End Sub
 
@@ -2131,34 +2526,15 @@ Public Class Main
             client = New ServiceReference1.MsgServiceClient(New System.ServiceModel.InstanceContext(New MsgServiceCallback))
         End If
 
-        'If MsgServiceAppPath = "" Then
-        '    Message.AddWarning("Message Service application path is unknown." & vbCrLf)
-        'Else
-        '    If ComNetRunning() Then
-        '        'The Message Service is Running.
-        '    Else 'The Message Service is NOT running'
-        '        'Start the Message Service:
-        '        If System.IO.File.Exists(MsgServiceExePath) Then 'OK to start the Message Service application:
-        '            Shell(Chr(34) & MsgServiceExePath & Chr(34), AppWinStyle.NormalFocus) 'Start Message Service application with no argument
-        '        Else
-        '            'Incorrect Message Service Executable path.
-        '            Message.AddWarning("Message Service exe file not found. Service not started." & vbCrLf)
-        '        End If
-        '    End If
-        'End If
-
         If ComNetRunning() Then
             'The Application.Lock file has been found at AdvlNetworkAppPath
             'The Message Service is Running.
         Else 'The Message Service is NOT running'
             'Start the Andorville™ Network:
-            'If MsgServiceAppPath = "" Then
             If AdvlNetworkAppPath = "" Then
                 Message.AddWarning("Andorville™ Network application path is unknown." & vbCrLf)
             Else
-                'If System.IO.File.Exists(MsgServiceExePath) Then 'OK to start the Message Service application:
                 If System.IO.File.Exists(AdvlNetworkExePath) Then 'OK to start the Message Service application:
-                    'Shell(Chr(34) & MsgServiceExePath & Chr(34), AppWinStyle.NormalFocus) 'Start Message Service application with no argument
                     Shell(Chr(34) & AdvlNetworkExePath & Chr(34), AppWinStyle.NormalFocus) 'Start Message Service application with no argument
                 Else
                     'Incorrect Message Service Executable path.
@@ -2177,19 +2553,12 @@ Public Class Main
             Message.AddWarning("Client state is faulted. Connection not made!" & vbCrLf)
         Else
             Try
-                'client.Endpoint.Binding.SendTimeout = New System.TimeSpan(0, 0, 8) 'Temporarily set the send timeaout to 8 seconds (NOTE: THIS SOMETIMES TIMES-OUT ON A SLOW COMPUTER!)
-                client.Endpoint.Binding.SendTimeout = New System.TimeSpan(0, 0, 16) 'Temporarily set the send timeaout to 16 seconds
+                client.Endpoint.Binding.SendTimeout = New System.TimeSpan(0, 0, 16) 'Temporarily set the send timeaout to 16 seconds (8 seconds is too short for a slow computer!)
 
                 ConnectionName = ApplicationInfo.Name 'This name will be modified if it is already used in an existing connection.
-                'ConnectionName = client.Connect(AppNetName, ApplicationInfo.Name, ConnectionName, Project.Name, Project.Description, Project.Type, Project.Path, False, False) 'UPDATED 2Feb19
                 ConnectionName = client.Connect(ProNetName, ApplicationInfo.Name, ConnectionName, Project.Name, Project.Description, Project.Type, Project.Path, False, False)
 
                 If ConnectionName <> "" Then
-                    'Message.Add("Connected to the Message Service with Connection Name: " & ConnectionName & vbCrLf)
-                    'Message.Add("Connected to the Communication Network with Connection Name: " & ConnectionName & vbCrLf)
-                    'Message.Add("Connected to the Message Service with Connection Name: " & ConnectionName & vbCrLf)
-                    'Message.Add("Connected to the Andorville™ Network with Connection Name: " & ConnectionName & vbCrLf)
-                    'Message.Add("Connected to the Andorville™ Network with Connection Name: [" & AppNetName & "]." & ConnectionName & vbCrLf)
                     Message.Add("Connected to the Andorville™ Network with Connection Name: [" & ProNetName & "]." & ConnectionName & vbCrLf)
                     client.Endpoint.Binding.SendTimeout = New System.TimeSpan(1, 0, 0) 'Restore the send timeout to 1 hour
                     btnOnline.Text = "Online"
@@ -2197,7 +2566,6 @@ Public Class Main
                     ConnectedToComNet = True
                     SendApplicationInfo()
                     SendProjectInfo()
-                    'client.GetMessageServiceAppInfoAsync() 'Update the Exe Path in case it has changed. This path may be needed in the future to start the ComNet (Message Service).
                     client.GetAdvlNetworkAppInfoAsync() 'Update the Exe Path in case it has changed. This path may be needed in the future to start the ComNet (Message Service).
 
                     bgwComCheck.WorkerReportsProgress = True
@@ -2209,13 +2577,10 @@ Public Class Main
                     End If
 
                 Else
-                    'Message.Add("Connection to the Message Service failed!" & vbCrLf)
                     Message.Add("Connection to the Andorville™ Network failed!" & vbCrLf)
                     client.Endpoint.Binding.SendTimeout = New System.TimeSpan(1, 0, 0) 'Restore the send timeout to 1 hour
                 End If
             Catch ex As System.TimeoutException
-                'Message.Add("Timeout error. Check if the Communication Network (Message Service) is running." & vbCrLf)
-                'Message.Add("Timeout error. Check if the Message Service (Message Service) is running." & vbCrLf)
                 Message.Add("Timeout error. Check if the Andorville™ Network (Message Service) is running." & vbCrLf)
             Catch ex As Exception
                 Message.Add("Error message: " & ex.Message & vbCrLf)
@@ -2228,8 +2593,6 @@ Public Class Main
         'Connect to the Message Service (ComNet) with the connection name ConnName.
 
         If ConnectedToComNet = False Then
-            'Dim Result As Boolean
-
             If IsNothing(client) Then
                 client = New ServiceReference1.MsgServiceClient(New System.ServiceModel.InstanceContext(New MsgServiceCallback))
             End If
@@ -2244,16 +2607,11 @@ Public Class Main
                 Message.AddWarning("client state is faulted. Connection not made!" & vbCrLf)
             Else
                 Try
-                    client.Endpoint.Binding.SendTimeout = New System.TimeSpan(0, 0, 16) 'Temporarily set the send timeout to 16 seconds
+                    client.Endpoint.Binding.SendTimeout = New System.TimeSpan(0, 0, 16) 'Temporarily set the send timeout to 16 seconds (8 seconds is too short for a slow computer!)
                     ConnectionName = ConnName 'This name will be modified if it is already used in an existing connection.
-                    'ConnectionName = client.Connect(AppNetName, ApplicationInfo.Name, ConnectionName, Project.Name, Project.Description, Project.Type, Project.Path, False, False) 'UPDATED 2Feb19
                     ConnectionName = client.Connect(ProNetName, ApplicationInfo.Name, ConnectionName, Project.Name, Project.Description, Project.Type, Project.Path, False, False)
 
                     If ConnectionName <> "" Then
-                        'Message.Add("Connected to the Communication Network as " & ConnectionName & vbCrLf)
-                        'Message.Add("Connected to the Message Service as " & ConnectionName & vbCrLf)
-                        'Message.Add("Connected to the Andorville™ Network with Connection Name: " & ConnectionName & vbCrLf)
-                        'Message.Add("Connected to the Andorville™ Network with Connection Name: [" & AppNetName & "]." & ConnectionName & vbCrLf)
                         Message.Add("Connected to the Andorville™ Network with Connection Name: [" & ProNetName & "]." & ConnectionName & vbCrLf)
                         client.Endpoint.Binding.SendTimeout = New System.TimeSpan(1, 0, 0) 'Restore the send timeout to 1 hour
                         btnOnline.Text = "Online"
@@ -2261,7 +2619,6 @@ Public Class Main
                         ConnectedToComNet = True
                         SendApplicationInfo()
                         SendProjectInfo()
-                        'client.GetMessageServiceAppInfoAsync() 'Update the Exe Path in case it has changed. This path may be needed in the future to start the ComNet (Message Service).
                         client.GetAdvlNetworkAppInfoAsync() 'Update the Exe Path in case it has changed. This path may be needed in the future to start the ComNet (Message Service).
 
                         bgwComCheck.WorkerReportsProgress = True
@@ -2273,14 +2630,10 @@ Public Class Main
                         End If
 
                     Else
-                        'Message.Add("Connection to the Communication Network failed!" & vbCrLf)
-                        'Message.Add("Connection to the Message Service failed!" & vbCrLf)
                         Message.Add("Connection to the Andorville™ Network failed!" & vbCrLf)
                         client.Endpoint.Binding.SendTimeout = New System.TimeSpan(1, 0, 0) 'Restore the send timeout to 1 hour
                     End If
                 Catch ex As System.TimeoutException
-                    'Message.Add("Timeout error. Check if the Communication Network is running." & vbCrLf)
-                    'Message.Add("Timeout error. Check if the Message Service is running." & vbCrLf)
                     Message.Add("Timeout error. Check if the Andorville™ Network (Message Service) is running." & vbCrLf)
                 Catch ex As Exception
                     Message.Add("Error message: " & ex.Message & vbCrLf)
@@ -2288,11 +2641,8 @@ Public Class Main
                 End Try
             End If
         Else
-            'Message.AddWarning("Already connected to the Communication Network." & vbCrLf)
-            'Message.AddWarning("Already connected to the Message Service ." & vbCrLf)
             Message.AddWarning("Already connected to the Andorville™ Network (Message Service)." & vbCrLf)
         End If
-
     End Sub
 
     Private Sub DisconnectFromComNet()
@@ -2408,6 +2758,39 @@ Public Class Main
         End If
     End Sub
 
+    Public Sub SendProjectInfo(ByVal ProjectPath As String)
+        'Send the project information to the Network application.
+        'This version of SendProjectInfo uses the ProjectPath argument.
+
+        If ConnectedToComNet = False Then
+            Message.AddWarning("The application is not connected to the Message Service." & vbCrLf)
+        Else 'Connected to the Message Service (ComNet).
+            If IsNothing(client) Then
+                Message.Add("No client connection available!" & vbCrLf)
+            Else
+                If client.State = ServiceModel.CommunicationState.Faulted Then
+                    Message.Add("Client state is faulted. Message not sent!" & vbCrLf)
+                Else
+                    'Construct the XMessage to send to AppNet:
+                    Dim decl As New XDeclaration("1.0", "utf-8", "yes")
+                    Dim doc As New XDocument(decl, Nothing) 'Create an XDocument to store the instructions.
+                    Dim xmessage As New XElement("XMsg") 'This indicates the start of the message in the XMessage class
+                    Dim projectInfo As New XElement("ProjectInfo")
+
+                    Dim Path As New XElement("Path", ProjectPath)
+                    projectInfo.Add(Path)
+                    xmessage.Add(projectInfo)
+                    doc.Add(xmessage)
+
+                    'Show the message sent to the Message Service:
+                    Message.XAddText("Message sent to " & "Message Service" & ":" & vbCrLf, "XmlSentNotice")
+                    Message.XAddXml(doc.ToString)
+                    Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                    client.SendMessage("", "MessageService", doc.ToString)
+                End If
+            End If
+        End If
+    End Sub
 
     Private Function ComNetRunning() As Boolean
         'Return True if ComNet (Message Service) is running.
@@ -2541,429 +2924,516 @@ Public Class Main
 
 #Region " Process XMessages" '===========================================================================================================================================
 
-    Private Sub XMsg_Instruction(Info As String, Locn As String) Handles XMsg.Instruction
+    Private Sub XMsg_Instruction(Data As String, Locn As String) Handles XMsg.Instruction
         'Process an XMessage instruction.
         'An XMessage is a simplified XSequence. It is used to exchange information between Andorville™ applications.
         '
-        'An XSequence file is an AL-H7™ Information Vector Sequence stored in an XML format.
-        'AL-H7™ is the name of a programming system that uses sequences of information and location value pairs to store data items or processing steps.
-        'A single information and location value pair is called a knowledge element (or noxel).
-        'Any program, mathematical expression or data set can be expressed as an Information Vector Sequence.
+        'An XSequence file is an AL-H7™ Information Sequence stored in an XML format.
+        'AL-H7™ is the name of a programming system that uses sequences of data and location value pairs to store information or processing steps.
+        'Any program, mathematical expression or data set can be expressed as an Information Sequence.
 
         'Add code here to process the XMessage instructions.
         'See other Andorville™ applications for examples.
 
-        If IsDBNull(Info) Then
-            Info = ""
+        If IsDBNull(Data) Then
+            Data = ""
         End If
 
-        Select Case Locn
+        'Intercept instructions with the prefix "WebPage_"
+        If Locn.StartsWith("WebPage_") Then 'Send the Data, Location data to the correct Web Page:
+            'Message.Add("Web Page Location: " & Locn & vbCrLf)
+            If Locn.Contains(":") Then
+                Dim EndOfWebPageNoString As Integer = Locn.IndexOf(":")
+                If Locn.Contains("-") Then
+                    Dim HyphenLocn As Integer = Locn.IndexOf("-")
+                    If HyphenLocn < EndOfWebPageNoString Then 'Web Page Location contains a sub-location in the web page - WebPage_1-SubLocn:Locn - SubLocn:Locn will be sent to Web page 1
+                        EndOfWebPageNoString = HyphenLocn
+                    End If
+                End If
+                Dim PageNoLen As Integer = EndOfWebPageNoString - 8
+                Dim WebPageNoString As String = Locn.Substring(8, PageNoLen)
+                Dim WebPageNo As Integer = CInt(WebPageNoString)
+                Dim WebPageData As String = Data
+                Dim WebPageLocn As String = Locn.Substring(EndOfWebPageNoString + 1)
+
+                'Message.Add("WebPageData = " & WebPageData & "  WebPageLocn = " & WebPageLocn & vbCrLf)
+
+                WebPageFormList(WebPageNo).XMsgInstruction(WebPageData, WebPageLocn)
+            Else
+                Message.AddWarning("XMessage instruction location is not complete: " & Locn & vbCrLf)
+            End If
+        Else
+
+            Select Case Locn
 
             'Case "ClientAppNetName"
-            '    ClientAppNetName = Info 'The name of the Client Application Network requesting service. ADDED 2Feb19.
-            Case "ClientProNetName"
-                ClientProNetName = Info 'The name of the Client Application Network requesting service. AD
+            '    ClientAppNetName = Data 'The name of the Client Application Network requesting service. ADDED 2Feb19.
+                Case "ClientProNetName"
+                    ClientProNetName = Data 'The name of the Client Application Network requesting service. AD
 
-            Case "ClientName"
-                ClientAppName = Info 'The name of the Client application requesting service.
+                Case "ClientName"
+                    ClientAppName = Data 'The name of the Client application requesting service.
 
-            Case "ClientConnectionName"
-                ClientConnName = Info 'The name of the client connection requesting service.
+                Case "ClientConnectionName"
+                    ClientConnName = Data 'The name of the client connection requesting service.
 
-            Case "ClientLocn" 'The Location within the Client requesting service.
-                Dim statusOK As New XElement("Status", "OK") 'Add Status OK element when the Client Location is changed
-                xlocns(xlocns.Count - 1).Add(statusOK)
+                Case "ClientLocn" 'The Location within the Client requesting service.
+                    Dim statusOK As New XElement("Status", "OK") 'Add Status OK element when the Client Location is changed
+                    xlocns(xlocns.Count - 1).Add(statusOK)
 
-                xmessage.Add(xlocns(xlocns.Count - 1)) 'Add the instructions for the last location to the reply xmessage
-                xlocns.Add(New XElement(Info)) 'Start the new location instructions
+                    xmessage.Add(xlocns(xlocns.Count - 1)) 'Add the instructions for the last location to the reply xmessage
+                    xlocns.Add(New XElement(Data)) 'Start the new location instructions
 
-            Case "Main"
+                'Case "OnCompletion" 'Specify the last instruction to be returned on completion of the XMessage processing.
+                '    'OnCompletion = Data
+                '    CompletionInstruction = Data
+
+                  'UPDATE:
+                Case "OnCompletion"
+                    OnCompletionInstruction = Data
+
+                Case "Main"
                  'Blank message - do nothing.
 
-            Case "Main:Status"
-                Select Case Info
-                    Case "OK"
-                        'Main instructions completed OK
-                End Select
+                'Case "Main:OnCompletion"
+                '    Select Case "Stop"
+                '        'Stop on completion of the instruction sequence.
+                '    End Select
 
-            Case "Command"
-                Select Case Info
-                    Case "ConnectToComNet" 'Startup Command
-                        If ConnectedToComNet = False Then
-                            ConnectToComNet()
-                        End If
+                Case "Main:EndInstruction"
+                    Select Case Data
+                        Case "Stop"
+                            'Stop at the end of the instruction sequence.
 
-                    Case "AppComCheck"
-                        'Add the Appplication Communication info to the reply message:
-                        Dim clientProNetName As New XElement("ClientProNetName", ProNetName) 'The Project Network Name
-                        xlocns(xlocns.Count - 1).Add(clientProNetName)
-                        Dim clientName As New XElement("ClientName", "ADVL_Regression_1") 'The name of this application.
-                        xlocns(xlocns.Count - 1).Add(clientName)
-                        Dim clientConnectionName As New XElement("ClientConnectionName", ConnectionName)
-                        xlocns(xlocns.Count - 1).Add(clientConnectionName)
-                        '<Status>OK</Status> will be automatically appended to the XMessage before it is sent.
+                            'Add other cases here:
+                    End Select
 
-                End Select
+                Case "Main:Status"
+                    Select Case Data
+                        Case "OK"
+                            'Main instructions completed OK
+                    End Select
+
+                Case "Command"
+                    Select Case Data
+                        Case "ConnectToComNet" 'Startup Command
+                            If ConnectedToComNet = False Then
+                                ConnectToComNet()
+                            End If
+
+                        Case "AppComCheck"
+                            'Add the Appplication Communication info to the reply message:
+                            Dim clientProNetName As New XElement("ClientProNetName", ProNetName) 'The Project Network Name
+                            xlocns(xlocns.Count - 1).Add(clientProNetName)
+                            Dim clientName As New XElement("ClientName", "ADVL_Regression_1") 'The name of this application.
+                            xlocns(xlocns.Count - 1).Add(clientName)
+                            Dim clientConnectionName As New XElement("ClientConnectionName", ConnectionName)
+                            xlocns(xlocns.Count - 1).Add(clientConnectionName)
+                            '<Status>OK</Status> will be automatically appended to the XMessage before it is sent.
+
+                    End Select
 
 
             'Startup Command Arguments ================================================
             'Case "AppNetName"
             '    'This is currently not used.
             '    'The AppNetName is determined elsewhere.
-            Case "ProNetName"
+                Case "ProNetName"
                 'This is currently not used.
                 'The ProNetName is determined elsewhere.
 
-            Case "ProjectName"
-                If Project.OpenProject(Info) = True Then
-                    ProjectSelected = True 'Project has been opened OK.
-                Else
-                    ProjectSelected = False 'Project could not be opened.
-                End If
+                Case "ProjectName"
+                    If Project.OpenProject(Data) = True Then
+                        ProjectSelected = True 'Project has been opened OK.
+                    Else
+                        ProjectSelected = False 'Project could not be opened.
+                    End If
 
-            Case "ProjectID"
-                Message.AddWarning("Add code to handle ProjectID parameter at StartUp!" & vbCrLf)
+                Case "ProjectID"
+                    Message.AddWarning("Add code to handle ProjectID parameter at StartUp!" & vbCrLf)
                 'Note the ComNet will usually select a project using ProjectPath.
 
-            Case "ProjectPath"
-                If Project.OpenProjectPath(Info) = True Then
-                    ProjectSelected = True 'Project has been opened OK.
-                    'THE PROJECT IS LOCKED IN THE Form.Load EVENT:
+                Case "ProjectPath"
+                    If Project.OpenProjectPath(Data) = True Then
+                        ProjectSelected = True 'Project has been opened OK.
+                        'THE PROJECT IS LOCKED IN THE Form.Load EVENT:
 
-                    ApplicationInfo.SettingsLocn = Project.SettingsLocn
-                    Message.SettingsLocn = Project.SettingsLocn 'Set up the Message object
-                    Message.Show() 'Added 18May19
+                        ApplicationInfo.SettingsLocn = Project.SettingsLocn
+                        Message.SettingsLocn = Project.SettingsLocn 'Set up the Message object
+                        Message.Show() 'Added 18May19
 
-                    txtTotalDuration.Text = Project.Usage.TotalDuration.Days.ToString.PadLeft(5, "0"c) & ":" &
-                                  Project.Usage.TotalDuration.Hours.ToString.PadLeft(2, "0"c) & ":" &
-                                  Project.Usage.TotalDuration.Minutes.ToString.PadLeft(2, "0"c) & ":" &
-                                  Project.Usage.TotalDuration.Seconds.ToString.PadLeft(2, "0"c)
+                        txtTotalDuration.Text = Project.Usage.TotalDuration.Days.ToString.PadLeft(5, "0"c) & ":" &
+                                      Project.Usage.TotalDuration.Hours.ToString.PadLeft(2, "0"c) & ":" &
+                                      Project.Usage.TotalDuration.Minutes.ToString.PadLeft(2, "0"c) & ":" &
+                                      Project.Usage.TotalDuration.Seconds.ToString.PadLeft(2, "0"c)
 
-                    txtCurrentDuration.Text = Project.Usage.CurrentDuration.Days.ToString.PadLeft(5, "0"c) & ":" &
-                                   Project.Usage.CurrentDuration.Hours.ToString.PadLeft(2, "0"c) & ":" &
-                                   Project.Usage.CurrentDuration.Minutes.ToString.PadLeft(2, "0"c) & ":" &
-                                   Project.Usage.CurrentDuration.Seconds.ToString.PadLeft(2, "0"c)
+                        txtCurrentDuration.Text = Project.Usage.CurrentDuration.Days.ToString.PadLeft(5, "0"c) & ":" &
+                                       Project.Usage.CurrentDuration.Hours.ToString.PadLeft(2, "0"c) & ":" &
+                                       Project.Usage.CurrentDuration.Minutes.ToString.PadLeft(2, "0"c) & ":" &
+                                       Project.Usage.CurrentDuration.Seconds.ToString.PadLeft(2, "0"c)
 
-                Else
-                    ProjectSelected = False 'Project could not be opened.
-                    Message.AddWarning("Project could not be opened at path: " & Info & vbCrLf)
-                End If
+                    Else
+                        ProjectSelected = False 'Project could not be opened.
+                        Message.AddWarning("Project could not be opened at path: " & Data & vbCrLf)
+                    End If
 
-            Case "ConnectionName"
-                StartupConnectionName = Info
+                Case "ConnectionName"
+                    StartupConnectionName = Data
             '--------------------------------------------------------------------------
 
             'Application Information  =================================================
             'returned by client.GetAdvlNetworkAppInfoAsync()
             'Case "MessageServiceAppInfo:Name"
             '    'The name of the Message Service Application. (Not used.)
-            Case "AdvlNetworkAppInfo:Name"
+                Case "AdvlNetworkAppInfo:Name"
                 'The name of the Andorville™ Network Application. (Not used.)
 
             'Case "MessageServiceAppInfo:ExePath"
             '    'The executable file path of the Message Service Application.
-            '    MsgServiceExePath = Info
-            Case "AdvlNetworkAppInfo:ExePath"
-                'The executable file path of the Andorville™ Network Application.
-                AdvlNetworkExePath = Info
+            '    MsgServiceExePath = Data
+                Case "AdvlNetworkAppInfo:ExePath"
+                    'The executable file path of the Andorville™ Network Application.
+                    AdvlNetworkExePath = Data
 
             'Case "MessageServiceAppInfo:Path"
             '    'The path of the Message Service Application (ComNet). (This is where an Application.Lock file will be found while ComNet is running.)
-            '    MsgServiceAppPath = Info
-            Case "AdvlNetworkAppInfo:Path"
-                'The path of the Andorville™ Network Application (ComNet). (This is where an Application.Lock file will be found while ComNet is running.)
-                AdvlNetworkAppPath = Info
+            '    MsgServiceAppPath = Data
+                Case "AdvlNetworkAppInfo:Path"
+                    'The path of the Andorville™ Network Application (ComNet). (This is where an Application.Lock file will be found while ComNet is running.)
+                    AdvlNetworkAppPath = Data
            '---------------------------------------------------------------------------
 
            'Message Window Instructions  ==============================================
-            Case "MessageWindow:Left"
-                If IsNothing(Message.MessageForm) Then
-                    Message.ApplicationName = ApplicationInfo.Name
-                    Message.SettingsLocn = Project.SettingsLocn
-                    Message.Show()
-                End If
-                Message.MessageForm.Left = Info
-            Case "MessageWindow:Top"
-                If IsNothing(Message.MessageForm) Then
-                    Message.ApplicationName = ApplicationInfo.Name
-                    Message.SettingsLocn = Project.SettingsLocn
-                    Message.Show()
-                End If
-                Message.MessageForm.Top = Info
-            Case "MessageWindow:Width"
-                If IsNothing(Message.MessageForm) Then
-                    Message.ApplicationName = ApplicationInfo.Name
-                    Message.SettingsLocn = Project.SettingsLocn
-                    Message.Show()
-                End If
-                Message.MessageForm.Width = Info
-            Case "MessageWindow:Height"
-                If IsNothing(Message.MessageForm) Then
-                    Message.ApplicationName = ApplicationInfo.Name
-                    Message.SettingsLocn = Project.SettingsLocn
-                    Message.Show()
-                End If
-                Message.MessageForm.Height = Info
-            Case "MessageWindow:Command"
-                Select Case Info
-                    Case "BringToFront"
-                        If IsNothing(Message.MessageForm) Then
-                            Message.ApplicationName = ApplicationInfo.Name
-                            Message.SettingsLocn = Project.SettingsLocn
-                            Message.Show()
-                        End If
-                        'Message.MessageForm.BringToFront()
-                        Message.MessageForm.Activate()
-                        Message.MessageForm.TopMost = True
-                        Message.MessageForm.TopMost = False
-                End Select
+                Case "MessageWindow:Left"
+                    If IsNothing(Message.MessageForm) Then
+                        Message.ApplicationName = ApplicationInfo.Name
+                        Message.SettingsLocn = Project.SettingsLocn
+                        Message.Show()
+                    End If
+                    Message.MessageForm.Left = Data
+                Case "MessageWindow:Top"
+                    If IsNothing(Message.MessageForm) Then
+                        Message.ApplicationName = ApplicationInfo.Name
+                        Message.SettingsLocn = Project.SettingsLocn
+                        Message.Show()
+                    End If
+                    Message.MessageForm.Top = Data
+                Case "MessageWindow:Width"
+                    If IsNothing(Message.MessageForm) Then
+                        Message.ApplicationName = ApplicationInfo.Name
+                        Message.SettingsLocn = Project.SettingsLocn
+                        Message.Show()
+                    End If
+                    Message.MessageForm.Width = Data
+                Case "MessageWindow:Height"
+                    If IsNothing(Message.MessageForm) Then
+                        Message.ApplicationName = ApplicationInfo.Name
+                        Message.SettingsLocn = Project.SettingsLocn
+                        Message.Show()
+                    End If
+                    Message.MessageForm.Height = Data
+                Case "MessageWindow:Command"
+                    Select Case Data
+                        Case "BringToFront"
+                            If IsNothing(Message.MessageForm) Then
+                                Message.ApplicationName = ApplicationInfo.Name
+                                Message.SettingsLocn = Project.SettingsLocn
+                                Message.Show()
+                            End If
+                            'Message.MessageForm.BringToFront()
+                            Message.MessageForm.Activate()
+                            Message.MessageForm.TopMost = True
+                            Message.MessageForm.TopMost = False
+                        Case "SaveSettings"
+                            Message.MessageForm.SaveFormSettings()
+                    End Select
 
             '---------------------------------------------------------------------------
 
             'Command to bring the Application window to the front:
-            Case "ApplicationWindow:Command"
-                Select Case Info
-                    Case "BringToFront"
-                        Me.Activate()
-                        Me.TopMost = True
-                        Me.TopMost = False
-                End Select
+                Case "ApplicationWindow:Command"
+                    Select Case Data
+                        Case "BringToFront"
+                            Me.Activate()
+                            Me.TopMost = True
+                            Me.TopMost = False
+                    End Select
 
             '---------------------------------------------------------------------------
 
 
             'Linear Regression Instructions ============================================
-            Case "Regression:Linear:Command"
-                Select Case Info
-                    Case "Clear"
-                        'Clear the Linear Regression data:
-                        LinRegr.Clear()
-                    Case "FitLine"
-                        'Fit a regression line to the input points:
-                        LinRegr.FitLine()
-                    Case "GetCorrelation"
-                        'Get the linear regression Correlation:
-                        Dim correlation As New XElement("Correlation", LinRegr.Correlation)
-                        xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetErrorStdDev"
-                        'Get the linear regression Standard Deviation of errors:
-                        Dim errorStdDev As New XElement("ErrorStdDev", LinRegr.ErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetForecast"
-                        'Get the Forecast Point Y using the ForecastPointX value:
-                        Dim forecast As New XElement("Forecast")
-                        Dim forecastPointX As New XElement("PointX", LinRegr.ForecastPointX)
-                        forecast.Add(forecastPointX)
-                        Dim forecastPointY As New XElement("PointY", LinRegr.Predict(LinRegr.ForecastPointX))
-                        forecast.Add(forecastPointY)
-                        xlocns(xlocns.Count - 1).Add(forecast) 'Add the XMessage instructions to the current reply XLocation
-                    Case "GetSlope"
-                        'Get the slope of the linear regression line:
-                        Dim slope As New XElement("Slope", LinRegr.Slope)
-                        xlocns(xlocns.Count - 1).Add(slope) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetIntercept"
-                        'Get the Y Intercept of the linear regression line:
-                        Dim intercept As New XElement("Intercept", LinRegr.Intercept)
-                        xlocns(xlocns.Count - 1).Add(intercept) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetRegressionLine"
-                        'Get the linear regression line parameters:
-                        Dim regressionLine As New XElement("RegressionLine")
-                        Dim slope As New XElement("Slope", LinRegr.Slope)
-                        regressionLine.Add(slope)
-                        Dim intercept As New XElement("Intercept", LinRegr.Intercept)
-                        regressionLine.Add(intercept)
-                        xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
-                    Case "GetRegressionInfo"
-                        'Get all linear regression information: Slope, Intercept, Correlation and ErrorStdDev:
-                        Dim regressionLine As New XElement("RegressionLine")
-                        Dim slope As New XElement("Slope", LinRegr.Slope)
-                        regressionLine.Add(slope)
-                        Dim intercept As New XElement("Intercept", LinRegr.Intercept)
-                        regressionLine.Add(intercept)
-                        xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
-                        Dim correlation As New XElement("Correlation", LinRegr.Correlation)
-                        xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
-                        Dim errorStdDev As New XElement("ErrorStdDev", LinRegr.ErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:Linear:Command " & Info & vbCrLf)
-                End Select
+                Case "Regression:Linear:Command"
+                    Select Case Data
+                        Case "Clear"
+                            'Clear the Linear Regression data:
+                            LinRegr.Clear()
+                        Case "FitLine"
+                            'Fit a regression line to the input points:
+                            LinRegr.FitLine()
+                        Case "GetCorrelation"
+                            'Get the linear regression Correlation:
+                            Dim correlation As New XElement("Correlation", LinRegr.Correlation)
+                            xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetErrorStdDev"
+                            'Get the linear regression Standard Deviation of errors:
+                            Dim errorStdDev As New XElement("ErrorStdDev", LinRegr.ErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetForecast"
+                            'Get the Forecast Point Y using the ForecastPointX value:
+                            Dim forecast As New XElement("Forecast")
+                            Dim forecastPointX As New XElement("PointX", LinRegr.ForecastPointX)
+                            forecast.Add(forecastPointX)
+                            Dim forecastPointY As New XElement("PointY", LinRegr.Predict(LinRegr.ForecastPointX))
+                            forecast.Add(forecastPointY)
+                            xlocns(xlocns.Count - 1).Add(forecast) 'Add the XMessage instructions to the current reply XLocation
+                        Case "GetSlope"
+                            'Get the slope of the linear regression line:
+                            Dim slope As New XElement("Slope", LinRegr.Slope)
+                            xlocns(xlocns.Count - 1).Add(slope) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetIntercept"
+                            'Get the Y Intercept of the linear regression line:
+                            Dim intercept As New XElement("Intercept", LinRegr.Intercept)
+                            xlocns(xlocns.Count - 1).Add(intercept) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetRegressionLine"
+                            'Get the linear regression line parameters:
+                            Dim regressionLine As New XElement("RegressionLine")
+                            Dim slope As New XElement("Slope", LinRegr.Slope)
+                            regressionLine.Add(slope)
+                            Dim intercept As New XElement("Intercept", LinRegr.Intercept)
+                            regressionLine.Add(intercept)
+                            xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
+                        Case "GetRegressionInfo"
+                            'Get all linear regression information: Slope, Intercept, Correlation and ErrorStdDev:
+                            Dim regressionLine As New XElement("RegressionLine")
+                            Dim slope As New XElement("Slope", LinRegr.Slope)
+                            regressionLine.Add(slope)
+                            Dim intercept As New XElement("Intercept", LinRegr.Intercept)
+                            regressionLine.Add(intercept)
+                            xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
+                            Dim correlation As New XElement("Correlation", LinRegr.Correlation)
+                            xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
+                            Dim errorStdDev As New XElement("ErrorStdDev", LinRegr.ErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:Linear:Command " & Data & vbCrLf)
+                    End Select
 
             'Commands to add single input points to the Linear Regression model:....................
-            Case "Regression:Linear:InputPoint:X"
-                LinRegr.InputPointX = Info
+                Case "Regression:Linear:InputPoint:X"
+                    LinRegr.InputPointX = Data
 
-            Case "Regression:Linear:InputPoint:Y"
-                LinRegr.InputPointY = Info
+                Case "Regression:Linear:InputPoint:Y"
+                    LinRegr.InputPointY = Data
 
-            Case "Regression:Linear:InputPoint:Command"
-                Select Case Info
-                    Case "Add"
-                        'Add the new Input Point to the DataPoints list:
-                        LinRegr.AddInputPoint()
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:Linear:InputPoint:Command " & Info & vbCrLf)
-                End Select
+                Case "Regression:Linear:InputPoint:Command"
+                    Select Case Data
+                        Case "Add"
+                            'Add the new Input Point to the DataPoints list:
+                            LinRegr.AddInputPoint()
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:Linear:InputPoint:Command " & Data & vbCrLf)
+                    End Select
             '.......................................................................................
 
             'Commands to read input points from a database:.........................................
-            Case "Regression:Linear:Database:Path"
-                LinRegr.DatabasePath = Info
-            Case "Regression:Linear:Database:Query"
-                LinRegr.DatabaseQuery = Info
-            Case "Regression:Linear:Database:XValueColumnName"
-                LinRegr.DatabaseXValueColumnName = Info
-            Case "Regression:Linear:Database:YValueColumnName"
-                LinRegr.DatabaseYValueColumnName = Info
-            Case "Regression:Linear:Database:Command"
-                Select Case Info
-                    Case "GetInputData"
-                        'Get the Input Data from the Database:
-                        LinRegr.DatabaseInputData()
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:Linear:Database:Command " & Info & vbCrLf)
-                End Select
+                Case "Regression:Linear:Database:Path"
+                    LinRegr.DatabasePath = Data
+                Case "Regression:Linear:Database:Query"
+                    LinRegr.DatabaseQuery = Data
+                Case "Regression:Linear:Database:XValueColumnName"
+                    LinRegr.DatabaseXValueColumnName = Data
+                Case "Regression:Linear:Database:YValueColumnName"
+                    LinRegr.DatabaseYValueColumnName = Data
+                Case "Regression:Linear:Database:Command"
+                    Select Case Data
+                        Case "GetInputData"
+                            'Get the Input Data from the Database:
+                            LinRegr.DatabaseInputData()
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:Linear:Database:Command " & Data & vbCrLf)
+                    End Select
 
             '.......................................................................................
 
-            Case "Regression:Linear:ForecastPointX"
-                'Set the X value of a forecast point
-                LinRegr.ForecastPointX = Info
+                Case "Regression:Linear:ForecastPointX"
+                    'Set the X value of a forecast point
+                    LinRegr.ForecastPointX = Data
 
 
             '---------------------------------------------------------------------------
 
             'Non-Linear Regression Instructions ========================================
 
-            Case "Regression:NonLinear:Command"
-                Select Case Info
-                    Case "Clear"
-                        'Clear the Non-Linear Regression data:
-                        NonLinRegr.Clear()
-                    Case "TransformInputPoints"
-                        'Transform the Input Points
-                        NonLinRegr.TransformInputPoints()
-                    Case "FitLine"
-                        'Fit a non-linear regression line to the input points:
-                        NonLinRegr.FitLine()
-                    Case "GetTransformedCorrelation"
-                        'Get the non-linear regression Transformed Correlation:
-                        Dim correlation As New XElement("TransformedCorrelation", NonLinRegr.TCorrelation)
-                        xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetTransformedErrorStdDev"
-                        'Get the non-linear regression Transformed Standard Deviation of errors:
-                        Dim errorStdDev As New XElement("TransformedErrorStdDev", NonLinRegr.TErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetErrorStdDev"
-                        'Get the non-linear regression Standard Deviation of errors:
-                        Dim errorStdDev As New XElement("ErrorStdDev", NonLinRegr.ErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetForecast"
-                        'Get the Forecast Point Y using the ForecastPointX value:
-                        Dim forecast As New XElement("Forecast")
-                        Dim forecastPointX As New XElement("PointX", NonLinRegr.ForecastPointX)
-                        forecast.Add(forecastPointX)
-                        Dim forecastPointY As New XElement("PointY", NonLinRegr.PredictY(NonLinRegr.ForecastPointX))
-                        forecast.Add(forecastPointY)
-                        xlocns(xlocns.Count - 1).Add(forecast) 'Add the XMessage instructions to the current reply XLocation
-                    Case "GetTransformedSlope"
-                        'Get the slope of the linear regression line:
-                        Dim slope As New XElement("TransformedSlope", NonLinRegr.TSlope)
-                        xlocns(xlocns.Count - 1).Add(slope) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetTransformedIntercept"
-                        'Get the Y Intercept of the linear regression line:
-                        Dim intercept As New XElement("TransformedIntercept", NonLinRegr.TIntercept)
-                        xlocns(xlocns.Count - 1).Add(intercept) 'Add the XMessage instruction to the current reply XLocation
-                    Case "GetTransformedRegressionLine"
-                        'Get the linear regression line parameters:
-                        Dim regressionLine As New XElement("TransformedRegressionLine")
-                        Dim slope As New XElement("Slope", NonLinRegr.TSlope)
-                        regressionLine.Add(slope)
-                        Dim intercept As New XElement("Intercept", NonLinRegr.TIntercept)
-                        regressionLine.Add(intercept)
-                        xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
-                    Case "GetRegressionInfo"
-                        'Get all linear regression information: Slope, Intercept, Correlation and ErrorStdDev:
-                        Dim regressionLine As New XElement("TransformedRegressionLine")
-                        Dim slope As New XElement("Slope", NonLinRegr.TSlope)
-                        regressionLine.Add(slope)
-                        Dim intercept As New XElement("Intercept", NonLinRegr.TIntercept)
-                        regressionLine.Add(intercept)
-                        xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
-                        Dim correlation As New XElement("TransformedCorrelation", NonLinRegr.TCorrelation)
-                        xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
-                        Dim transErrorStdDev As New XElement("TransformedErrorStdDev", NonLinRegr.TErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(transErrorStdDev) 'Add the XMessage instruction to the current reply XLocation
-                        Dim errorStdDev As New XElement("ErrorStdDev", NonLinRegr.ErrorStdDev)
-                        xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                Case "Regression:NonLinear:Command"
+                    Select Case Data
+                        Case "Clear"
+                            'Clear the Non-Linear Regression data:
+                            NonLinRegr.Clear()
+                        Case "TransformInputPoints"
+                            'Transform the Input Points
+                            NonLinRegr.TransformInputPoints()
+                        Case "FitLine"
+                            'Fit a non-linear regression line to the input points:
+                            NonLinRegr.FitLine()
+                        Case "GetTransformedCorrelation"
+                            'Get the non-linear regression Transformed Correlation:
+                            Dim correlation As New XElement("TransformedCorrelation", NonLinRegr.TCorrelation)
+                            xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetTransformedErrorStdDev"
+                            'Get the non-linear regression Transformed Standard Deviation of errors:
+                            Dim errorStdDev As New XElement("TransformedErrorStdDev", NonLinRegr.TErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetErrorStdDev"
+                            'Get the non-linear regression Standard Deviation of errors:
+                            Dim errorStdDev As New XElement("ErrorStdDev", NonLinRegr.ErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetForecast"
+                            'Get the Forecast Point Y using the ForecastPointX value:
+                            Dim forecast As New XElement("Forecast")
+                            Dim forecastPointX As New XElement("PointX", NonLinRegr.ForecastPointX)
+                            forecast.Add(forecastPointX)
+                            Dim forecastPointY As New XElement("PointY", NonLinRegr.PredictY(NonLinRegr.ForecastPointX))
+                            forecast.Add(forecastPointY)
+                            xlocns(xlocns.Count - 1).Add(forecast) 'Add the XMessage instructions to the current reply XLocation
+                        Case "GetTransformedSlope"
+                            'Get the slope of the linear regression line:
+                            Dim slope As New XElement("TransformedSlope", NonLinRegr.TSlope)
+                            xlocns(xlocns.Count - 1).Add(slope) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetTransformedIntercept"
+                            'Get the Y Intercept of the linear regression line:
+                            Dim intercept As New XElement("TransformedIntercept", NonLinRegr.TIntercept)
+                            xlocns(xlocns.Count - 1).Add(intercept) 'Add the XMessage instruction to the current reply XLocation
+                        Case "GetTransformedRegressionLine"
+                            'Get the linear regression line parameters:
+                            Dim regressionLine As New XElement("TransformedRegressionLine")
+                            Dim slope As New XElement("Slope", NonLinRegr.TSlope)
+                            regressionLine.Add(slope)
+                            Dim intercept As New XElement("Intercept", NonLinRegr.TIntercept)
+                            regressionLine.Add(intercept)
+                            xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
+                        Case "GetRegressionInfo"
+                            'Get all linear regression information: Slope, Intercept, Correlation and ErrorStdDev:
+                            Dim regressionLine As New XElement("TransformedRegressionLine")
+                            Dim transformType As New XElement("TransformType", NonLinRegr.TransformType)
+                            regressionLine.Add(transformType)
+                            Dim slope As New XElement("Slope", NonLinRegr.TSlope)
+                            regressionLine.Add(slope)
+                            Dim intercept As New XElement("Intercept", NonLinRegr.TIntercept)
+                            regressionLine.Add(intercept)
+                            xlocns(xlocns.Count - 1).Add(regressionLine) 'Add the XMessage instructions to the current reply XLocation
+                            Dim correlation As New XElement("TransformedCorrelation", NonLinRegr.TCorrelation)
+                            xlocns(xlocns.Count - 1).Add(correlation) 'Add the XMessage instruction to the current reply XLocation
+                            Dim transErrorStdDev As New XElement("TransformedErrorStdDev", NonLinRegr.TErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(transErrorStdDev) 'Add the XMessage instruction to the current reply XLocation
+                            Dim errorStdDev As New XElement("ErrorStdDev", NonLinRegr.ErrorStdDev)
+                            xlocns(xlocns.Count - 1).Add(errorStdDev) 'Add the XMessage instruction to the current reply XLocation
 
-                        'Note: The TransformedErrorStdDev and ErrorStdDev are constants for a non-linear regression.
-                        'The UnTransformedErrorStdDev is not a constant and must be calulated at each XValue.
+                            'Note: The TransformedErrorStdDev and ErrorStdDev are constants for a non-linear regression.
+                            'The UnTransformedErrorStdDev is not a constant and must be calulated at each XValue.
 
 
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:NonLinear:Command " & Info & vbCrLf)
-                End Select
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:NonLinear:Command " & Data & vbCrLf)
+                    End Select
 
             'Commands to add single input points to the Linear Regression model:....................
-            Case "Regression:NonLinear:InputPoint:X"
-                NonLinRegr.InputPointX = Info
+                Case "Regression:NonLinear:InputPoint:X"
+                    NonLinRegr.InputPointX = Data
 
-            Case "Regression:NonLinear:InputPoint:Y"
-                NonLinRegr.InputPointY = Info
+                Case "Regression:NonLinear:InputPoint:Y"
+                    NonLinRegr.InputPointY = Data
 
-            Case "Regression:NonLinear:InputPoint:Command"
-                Select Case Info
-                    Case "Add"
-                        'Add the new Input Point to the DataPoints list:
-                        NonLinRegr.AddInputPoint()
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:NonLinear:InputPoint:Command " & Info & vbCrLf)
-                End Select
+                Case "Regression:NonLinear:InputPoint:Command"
+                    Select Case Data
+                        Case "Add"
+                            'Add the new Input Point to the DataPoints list:
+                            NonLinRegr.AddInputPoint()
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:NonLinear:InputPoint:Command " & Data & vbCrLf)
+                    End Select
             '.......................................................................................
 
             'Commands to read input points from a database:.........................................
-            Case "Regression:NonLinear:Database:Path"
-                NonLinRegr.DatabasePath = Info
-            Case "Regression:NonLinear:Database:Query"
-                NonLinRegr.DatabaseQuery = Info
-            Case "Regression:NonLinear:Database:XValueColumnName"
-                NonLinRegr.DatabaseXValueColumnName = Info
-            Case "Regression:NonLinear:Database:YValueColumnName"
-                NonLinRegr.DatabaseYValueColumnName = Info
-            Case "Regression:NonLinear:Database:Command"
-                Select Case Info
-                    Case "GetInputData"
-                        'Get the Input Data from the Database:
-                        NonLinRegr.DatabaseInputData()
-                    Case Else
-                        Message.AddWarning("Unknown command: Regression:NonLinear:Database:Command " & Info & vbCrLf)
-                End Select
+                Case "Regression:NonLinear:Database:Path"
+                    NonLinRegr.DatabasePath = Data
+                Case "Regression:NonLinear:Database:Query"
+                    NonLinRegr.DatabaseQuery = Data
+                Case "Regression:NonLinear:Database:XValueColumnName"
+                    NonLinRegr.DatabaseXValueColumnName = Data
+                Case "Regression:NonLinear:Database:YValueColumnName"
+                    NonLinRegr.DatabaseYValueColumnName = Data
+                Case "Regression:NonLinear:Database:Command"
+                    Select Case Data
+                        Case "GetInputData"
+                            'Get the Input Data from the Database:
+                            NonLinRegr.DatabaseInputData()
+                        Case Else
+                            Message.AddWarning("Unknown command: Regression:NonLinear:Database:Command " & Data & vbCrLf)
+                    End Select
 
                 '.......................................................................................
-            Case "Regression:NonLinear:TransformType"
-                'Set the type of transform to apply to the Input Points. The transform attempts to make the transformed points linear to allow a linear regression line fit.
-                NonLinRegr.TransformType = Info
+                Case "Regression:NonLinear:TransformType"
+                    'Set the type of transform to apply to the Input Points. The transform attempts to make the transformed points linear to allow a linear regression line fit.
+                    'Valid transform types are: Linear, Logarithmic, Exponential and Power.
+                    NonLinRegr.TransformType = Data
 
-            Case "Regression:NonLinear:ForecastPointX"
-                'Set the X value of a forecast point
-                NonLinRegr.ForecastPointX = Info
+                Case "Regression:NonLinear:ForecastPointX"
+                    'Set the X value of a forecast point
+                    NonLinRegr.ForecastPointX = Data
 
+                Case "Regression:NonLinear:ForecastPointXDateString"
+                    'Set the X value of a forecast point using a date string
+                    NonLinRegr.ForecastPointXDateString = Data
 
 
             '---------------------------------------------------------------------------
 
-            Case "EndOfSequence"
-                'End of Information Vector Sequence reached.
-                'Add Status OK element at the end of the sequence:
-                Dim statusOK As New XElement("Status", "OK")
-                xlocns(xlocns.Count - 1).Add(statusOK)
+                Case "EndOfSequence"
+                    'End of Information Vector Sequence reached.
+                    'Add Status OK element at the end of the sequence:
+                    'Dim statusOK As New XElement("Status", "OK")
+                    'Dim statusOK As New XElement("Status", OnCompletion) '
+                    Dim statusOK As New XElement("Status", "OK") 'Add Status OK element at the end of the sequence
+                    xlocns(xlocns.Count - 1).Add(statusOK)
 
-            Case Else
-                Message.AddWarning("Unknown location: " & Locn & vbCrLf)
-                Message.AddWarning("            info: " & Info & vbCrLf)
-        End Select
+                    Select Case EndInstruction
+                        Case "Stop"
+                            'No instructions.
 
+                            'Add any other Cases here:
+
+                        Case Else
+                            Message.AddWarning("Unknown End Instruction: " & EndInstruction & vbCrLf)
+                    End Select
+                    EndInstruction = "Stop"
+
+                    ''Add the final OnCompletion instruction:
+                    'Dim onCompletion As New XElement("OnCompletion", CompletionInstruction) '
+                    ''xlocns(xlocns.Count - 1).Add(statusOK)
+                    'xlocns(xlocns.Count - 1).Add(onCompletion)
+                    'CompletionInstruction = "Stop" 'Reset the Completion Instruction
+
+                    ''Final Version:
+                    ''Add the final EndInstruction:
+                    'Dim xEndInstruction As New XElement("EndInstruction", OnCompletionInstruction)
+                    'xlocns(xlocns.Count - 1).Add(xEndInstruction)
+                    'OnCompletionInstruction = "Stop" 'Reset the OnCompletion Instruction
+
+                    'Add the final EndInstruction:
+                    If OnCompletionInstruction = "Stop" Then
+                        'Final EndInstruction is not required.
+                    Else
+                        Dim xEndInstruction As New XElement("EndInstruction", OnCompletionInstruction)
+                        xlocns(xlocns.Count - 1).Add(xEndInstruction)
+                        OnCompletionInstruction = "Stop" 'Reset the OnCompletion Instruction
+                    End If
+
+                Case Else
+                    Message.AddWarning("Unknown location: " & Locn & vbCrLf)
+                    Message.AddWarning("            data: " & Data & vbCrLf)
+            End Select
+        End If
     End Sub
 
     'Private Sub SendMessage()
@@ -3025,24 +3495,33 @@ Public Class Main
     '    End If
     'End Sub
 
-    Private Sub XMsgLocal_Instruction(Info As String, Locn As String) Handles XMsgLocal.Instruction
+    Private Sub XMsgLocal_Instruction(Data As String, Locn As String) Handles XMsgLocal.Instruction
         'Process an XMessage instruction locally.
 
-        If IsDBNull(Info) Then
-            Info = ""
+        If IsDBNull(Data) Then
+            Data = ""
         End If
 
-        'Intercept and instructions with the prefix "WebPage_"
-        If Locn.StartsWith("WebPage_") Then 'Send the Info, Location data to the correct Web Page:
+        'Intercept instructions with the prefix "WebPage_"
+        If Locn.StartsWith("WebPage_") Then 'Send the Data, Location data to the correct Web Page:
+            'Message.Add("Web Page Location: " & Locn & vbCrLf)
             If Locn.Contains(":") Then
                 Dim EndOfWebPageNoString As Integer = Locn.IndexOf(":")
+                If Locn.Contains("-") Then
+                    Dim HyphenLocn As Integer = Locn.IndexOf("-")
+                    If HyphenLocn < EndOfWebPageNoString Then 'Web Page Location contains a sub-location in the web page - WebPage_1-SubLocn:Locn - SubLocn:Locn will be sent to Web page 1
+                        EndOfWebPageNoString = HyphenLocn
+                    End If
+                End If
                 Dim PageNoLen As Integer = EndOfWebPageNoString - 8
                 Dim WebPageNoString As String = Locn.Substring(8, PageNoLen)
                 Dim WebPageNo As Integer = CInt(WebPageNoString)
-                Dim WebPageInfo As String = Info
+                Dim WebPageData As String = Data
                 Dim WebPageLocn As String = Locn.Substring(EndOfWebPageNoString + 1)
 
-                WebPageFormList(WebPageNo).XMsgInstruction(WebPageInfo, WebPageLocn)
+                'Message.Add("WebPageData = " & WebPageData & "  WebPageLocn = " & WebPageLocn & vbCrLf)
+
+                WebPageFormList(WebPageNo).XMsgInstruction(WebPageData, WebPageLocn)
             Else
                 Message.AddWarning("XMessage instruction location is not complete: " & Locn & vbCrLf)
             End If
@@ -3050,13 +3529,31 @@ Public Class Main
 
             Select Case Locn
                 Case "ClientName"
-                    ClientAppName = Info 'The name of the Client requesting service.
+                    ClientAppName = Data 'The name of the Client requesting service.
+
+                          'UPDATE:
+                Case "OnCompletion"
+                    OnCompletionInstruction = Data
 
                 Case "Main"
                  'Blank message - do nothing.
 
+                'Case "Main:OnCompletion"
+                '    Select Case "Stop"
+                '        'Stop on completion of the instruction sequence.
+                '    End Select
+
+
+
+                Case "Main:EndInstruction"
+                    Select Case Data
+                        Case "Stop"
+                            'Stop at the end of the instruction sequence.
+
+                            'Add other cases here:
+                    End Select
                 Case "Main:Status"
-                    Select Case Info
+                    Select Case Data
                         Case "OK"
                             'Main instructions completed OK
                     End Select
@@ -3065,8 +3562,9 @@ Public Class Main
                     'End of Information Vector Sequence reached.
 
                 Case Else
+                    Message.AddWarning("Local XMessage: " & Locn & vbCrLf)
                     Message.AddWarning("Unknown location: " & Locn & vbCrLf)
-                    Message.AddWarning("            info: " & Info & vbCrLf)
+                    Message.AddWarning("            data: " & Data & vbCrLf)
             End Select
         End If
     End Sub
@@ -3120,7 +3618,8 @@ Public Class Main
             End Try
 
             'System.Threading.Thread.Sleep(60000) 'Sleep time in milliseconds (60 seconds) - For testing only.
-            System.Threading.Thread.Sleep(3600000) 'Sleep time in milliseconds (60 minutes)
+            'System.Threading.Thread.Sleep(3600000) 'Sleep time in milliseconds (60 minutes)
+            System.Threading.Thread.Sleep(1800000) 'Sleep time in milliseconds (30 minutes)
         End While
     End Sub
 
@@ -3155,7 +3654,57 @@ Public Class Main
         Message.AddWarning("Send Message error: " & e.UserState.ToString & vbCrLf) 'Show the bgwSendMessage message 
     End Sub
 
+    Private Sub bgwSendMessageAlt_DoWork(sender As Object, e As DoWorkEventArgs) Handles bgwSendMessageAlt.DoWork
+        'Alternative SendMessage background worker - used to send a message while instructions are being processed. 
+        'Send a message on a separate thread
+        Try
+            If IsNothing(client) Then
+                bgwSendMessageAlt.ReportProgress(1, "No Connection available. Message not sent!")
+            Else
+                If client.State = ServiceModel.CommunicationState.Faulted Then
+                    bgwSendMessageAlt.ReportProgress(1, "Connection state is faulted. Message not sent!")
+                Else
+                    Dim SendMessageParamsAlt As clsSendMessageParams = e.Argument
+                    client.SendMessage(SendMessageParamsAlt.ProjectNetworkName, SendMessageParamsAlt.ConnectionName, SendMessageParamsAlt.Message)
+                End If
+            End If
+        Catch ex As Exception
+            bgwSendMessageAlt.ReportProgress(1, ex.Message)
+        End Try
+    End Sub
 
+    Private Sub bgwSendMessageAlt_ProgressChanged(sender As Object, e As ProgressChangedEventArgs) Handles bgwSendMessageAlt.ProgressChanged
+        'Display an error message:
+        Message.AddWarning("Send Message error: " & e.UserState.ToString & vbCrLf) 'Show the bgwSendMessageAlt message 
+    End Sub
+
+    Private Sub NonLinRegr_ErrorMessage(Message As String) Handles NonLinRegr.ErrorMessage
+        Me.Message.AddWarning(Message)
+    End Sub
+
+    Private Sub NonLinRegr_Message(Message As String) Handles NonLinRegr.Message
+        Me.Message.Add(Message)
+    End Sub
+
+    Private Sub LinRegr_ErrorMessage(Message As String) Handles LinRegr.ErrorMessage
+        Me.Message.AddWarning(Message)
+    End Sub
+
+    Private Sub LinRegr_Message(Message As String) Handles LinRegr.Message
+        Me.Message.Add(Message)
+    End Sub
+
+    Private Sub Message_ShowXMessagesChanged(Show As Boolean) Handles Message.ShowXMessagesChanged
+        ShowXMessages = Show
+    End Sub
+
+    Private Sub Message_ShowSysMessagesChanged(Show As Boolean) Handles Message.ShowSysMessagesChanged
+        ShowSysMessages = Show
+    End Sub
+
+    Private Sub Project_NewProjectCreated(ProjectPath As String) Handles Project.NewProjectCreated
+        SendProjectInfo(ProjectPath) 'Send the path of the new project to the Network application. The new project will be added to the list of projects.
+    End Sub
 
 
 
@@ -3163,15 +3712,16 @@ Public Class Main
 
 
 #End Region 'Form Methods ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    Public Class clsSendMessageParams
+        'Parameters used when sending a message using the Message Service.
+        Public ProjectNetworkName As String
+        Public ConnectionName As String
+        Public Message As String
+    End Class
 
 End Class
 
-Public Class clsSendMessageParams
-    'Parameters used when sending a message using the Message Service.
-    Public ProjectNetworkName As String
-    Public ConnectionName As String
-    Public Message As String
-End Class
+
 
 Public Class clsLinRegr
     'Linear Regression class.
@@ -3609,6 +4159,19 @@ Public Class clsNonLinRegr
         End Set
     End Property
 
+    Private _forecastPointXDateString As String = "" 'The property is used to store the Date String corresponding to ForecastPointX date. The corresponding date number is also calculated for _ForecastPointX
+    Property ForecastPointXDateString As String
+        Get
+            Return _forecastPointXDateString
+        End Get
+        Set(value As String)
+            _forecastPointXDateString = value
+            'Update _forecastPointX with the corresponding value:
+            Dim ForecastPointXDate As Date = value
+            _forecastPointX = ForecastPointXDate.ToOADate
+        End Set
+    End Property
+
     Private _tForecastPointX As Double = 0 'The transformed X value of a forecast point (Y value to be forecast)
     Property TForecastPointX As Double
         Get
@@ -3809,13 +4372,16 @@ Public Class clsNonLinRegr
                         End If
                     ElseIf XType = "Number" Then
                         If YType = "Number" Then
+                            Dim I As Integer = 0 'For debugging
                             DataPoints.Clear()
                             For Each dr As DataRow In ds.Tables("InputData").Rows
                                 Dim NewPoint As New NonLinDataPoint
                                 NewPoint.XValue = dr(DatabaseXValueColumnName)
                                 NewPoint.YValue = dr(DatabaseYValueColumnName)
                                 DataPoints.Add(NewPoint)
+                                I += 1 'For debugging
                             Next
+                            RaiseEvent Message("NonLinRegr.DatabaseInputData - Number of Input datapoints added: " & I & vbCrLf)
                         End If
                     End If
 
@@ -3827,7 +4393,7 @@ Public Class clsNonLinRegr
             End If
 
         Catch ex As Exception
-
+            RaiseEvent ErrorMessage("NonLinRegr.DatabaseInputData error: " & ex.Message & vbCrLf)
         End Try
 
     End Sub 'DatabaseInputData()
@@ -3895,7 +4461,8 @@ Public Class clsNonLinRegr
                 DataPoints(I).SqTYPredError = DataPoints(I).TYPredError * DataPoints(I).TYPredError
 
                 DataPoints(I).YPrediction = UnTransY(DataPoints(I).TYPrediction)
-                DataPoints(I).YPredError = DataPoints(I).YValue - DataPoints(I).TYPrediction
+                'DataPoints(I).YPredError = DataPoints(I).YValue - DataPoints(I).TYPrediction
+                DataPoints(I).YPredError = DataPoints(I).YValue - DataPoints(I).YPrediction
                 DataPoints(I).SqYPredError = DataPoints(I).YPredError * DataPoints(I).YPredError
             Next
 

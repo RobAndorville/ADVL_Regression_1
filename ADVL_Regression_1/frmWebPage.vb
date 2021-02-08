@@ -170,10 +170,10 @@ Public Class frmWebPage
     End Sub
 
     Private Sub CheckFormPos()
-        'Chech that the form can be seen on a screen.
+        'Check that the form can be seen on a screen.
 
-        Dim MinWidthVisible As Integer = 48 'Minimum number of X pixels visible. The form will be moved if this many form pixels are not visible.
-        Dim MinHeightVisible As Integer = 48 'Minimum number of Y pixels visible. The form will be moved if this many form pixels are not visible.
+        Dim MinWidthVisible As Integer = 192 'Minimum number of X pixels visible. The form will be moved if this many form pixels are not visible.
+        Dim MinHeightVisible As Integer = 64 'Minimum number of Y pixels visible. The form will be moved if this many form pixels are not visible.
 
         Dim FormRect As New Rectangle(Me.Left, Me.Top, Me.Width, Me.Height)
         Dim WARect As Rectangle = Screen.GetWorkingArea(FormRect) 'The Working Area rectangle - the usable area of the screen containing the form.
@@ -449,41 +449,41 @@ Public Class frmWebPage
 
     End Sub
 
-    Private Sub XSeq_Instruction(Info As String, Locn As String) Handles XSeq.Instruction
+    Private Sub XSeq_Instruction(Data As String, Locn As String) Handles XSeq.Instruction
         'Execute each instruction produced by running the XSeq file.
 
         Select Case Locn
             Case "Settings:SendData:LatDegrees" 'REDUNDANT!
-                RestoreSetting("SendData", "LatDegrees", Info)
+                RestoreSetting("SendData", "LatDegrees", Data)
 
             Case "Settings:SendData:LongDegrees" 'REDUNDANT!
-                RestoreSetting("SendData", "LongDegrees", Info)
+                RestoreSetting("SendData", "LongDegrees", Data)
 
             Case "Settings:Form:Name"
-                FormName = Info
+                FormName = Data
 
             Case "Settings:Form:Item:Name"
-                ItemName = Info
+                ItemName = Data
 
             Case "Settings:Form:Item:Value"
-                RestoreSetting(FormName, ItemName, Info)
+                RestoreSetting(FormName, ItemName, Data)
 
             Case "Settings:Form:SelectId"
-                SelectId = Info
+                SelectId = Data
 
             Case "Settings:Form:OptionText"
-                RestoreOption(SelectId, Info)
+                RestoreOption(SelectId, Data)
 
             Case "Settings"
 
             Case "EndOfSequence"
-                'Main.Message.Add("End of processing sequence" & Info & vbCrLf)
+                'Main.Message.Add("End of processing sequence" & Data & vbCrLf)
 
             Case Else
-                'Main.Message.AddWarning("Unknown location: " & Locn & "  Info: " & Info & vbCrLf)
+                'Main.Message.AddWarning("Unknown location: " & Locn & "  Data: " & Data & vbCrLf)
 
                 'If the instructions are not saved web page settings identified above, send them directly to the web page:
-                XMsgInstruction(Info, Locn) 'The JavaScript function (also called XMsgInstruction) will attempt to process this instruction.
+                XMsgInstruction(Data, Locn) 'The JavaScript function (also called XMsgInstruction) will attempt to process this instruction.
 
         End Select
     End Sub
@@ -538,25 +538,144 @@ Public Class frmWebPage
         Return Main.ProNetName
     End Function
 
-    'Public Sub SendXMessage(ByVal AppNetName As String, ByVal ConnName As String, ByVal XMsg As String) 'UPDATED 2Feb19.
-    Public Sub SendXMessage(ByVal ProNetName As String, ByVal ConnName As String, ByVal XMsg As String)
-        'Send the XMsg to the application with the connection name ConnName and the Application Network Name ProNetName.
+    Public Sub SendXMessage(ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName.
         If IsNothing(Main.client) Then
             Main.Message.Add("No client connection available!" & vbCrLf)
         Else
             If Main.client.State = ServiceModel.CommunicationState.Faulted Then
                 Main.Message.Add("client state is faulted. Message not sent!" & vbCrLf)
             Else
-                'Main.client.SendMessageAsync(AppNetName, ConnName, XMsg)
-                Main.client.SendMessageAsync(ProNetName, ConnName, XMsg)
-                'Main.Message.XAddText("Message sent to " & ConnName & " (AppNet: " & AppNetName & ") " & ":" & vbCrLf, "XmlSentNotice")
-                'Main.Message.XAddText("Message sent to " & ConnName & " (ProNet: " & ProNetName & ") " & ":" & vbCrLf, "XmlSentNotice")
-                Main.Message.XAddText("Message sent to: [" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
-                Main.Message.XAddXml(XMsg)
-                Main.Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                If Main.bgwSendMessage.IsBusy Then
+                    Main.Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                Else
+                    Dim SendMessageParams As New Main.clsSendMessageParams
+                    SendMessageParams.ProjectNetworkName = Main.ProNetName
+                    SendMessageParams.ConnectionName = ConnName
+                    SendMessageParams.Message = XMsg
+                    Main.bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    If Main.ShowXMessages Then
+                        Main.Message.XAddText("Message sent to " & "[" & Main.ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                        Main.Message.XAddXml(XMsg)
+                        Main.Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                    End If
+                End If
+                End If
+        End If
+    End Sub
+
+    Public Sub SendXMessageExt(ByVal ProNetName As String, ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName and Project Network Name ProNetname.
+        'This version can send the XMessage to a connection external to the current Project Network.
+        If IsNothing(Main.client) Then
+            Main.Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If Main.client.State = ServiceModel.CommunicationState.Faulted Then
+                Main.Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                If Main.bgwSendMessage.IsBusy Then
+                    Main.Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                Else
+                    Dim SendMessageParams As New Main.clsSendMessageParams
+                    SendMessageParams.ProjectNetworkName = ProNetName
+                    SendMessageParams.ConnectionName = ConnName
+                    SendMessageParams.Message = XMsg
+                    Main.bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                    If Main.ShowXMessages Then
+                        Main.Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                        Main.Message.XAddXml(XMsg)
+                        Main.Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                    End If
+                End If
+                End If
+        End If
+    End Sub
+
+    Public Sub SendXMessageWait(ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName.
+        'Wait for the connection to be made.
+        If IsNothing(Main.client) Then
+            Main.Message.Add("No client connection available!" & vbCrLf)
+        Else
+            Try
+                Application.DoEvents()
+
+                If Main.client.State = ServiceModel.CommunicationState.Faulted Then
+                    Main.Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+                Else
+                    Dim StartTime As Date = Now
+                    Dim Duration As TimeSpan
+                    'Wait up to 16 seconds for the connection ConnName to be established
+                    While Main.client.ConnectionExists(Main.ProNetName, ConnName) = False 'Wait until the required connection is made.
+                        System.Threading.Thread.Sleep(1000) 'Pause for 1000ms
+                        Duration = Now - StartTime
+                        If Duration.Seconds > 16 Then Exit While
+                    End While
+
+                    If Main.client.ConnectionExists(Main.ProNetName, ConnName) = False Then
+                        Main.Message.AddWarning("Connection not available: " & ConnName & " in application network: " & Main.ProNetName & vbCrLf)
+                    Else
+                        If Main.bgwSendMessage.IsBusy Then
+                            Main.Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                        Else
+                            Dim SendMessageParams As New Main.clsSendMessageParams
+                            SendMessageParams.ProjectNetworkName = Main.ProNetName
+                            SendMessageParams.ConnectionName = ConnName
+                            SendMessageParams.Message = XMsg
+                            Main.bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                            If Main.ShowXMessages Then
+                                Main.Message.XAddText("Message sent to " & "[" & Main.ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                                Main.Message.XAddXml(XMsg)
+                                Main.Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                            End If
+                        End If
+                    End If
+                End If
+            Catch ex As Exception
+                Main.Message.AddWarning(ex.Message & vbCrLf)
+            End Try
+        End If
+    End Sub
+
+    Public Sub SendXMessageExtWait(ByVal ProNetName As String, ByVal ConnName As String, ByVal XMsg As String)
+        'Send the XMsg to the application with the connection name ConnName and Project Network Name ProNetName.
+        'Wait for the connection to be made.
+        'This version can send the XMessage to a connection external to the current Project Network.
+        If IsNothing(Main.client) Then
+            Main.Message.Add("No client connection available!" & vbCrLf)
+        Else
+            If Main.client.State = ServiceModel.CommunicationState.Faulted Then
+                Main.Message.Add("client state is faulted. Message not sent!" & vbCrLf)
+            Else
+                Dim StartTime As Date = Now
+                Dim Duration As TimeSpan
+                'Wait up to 16 seconds for the connection ConnName to be established
+                While Main.client.ConnectionExists(ProNetName, ConnName) = False
+                    System.Threading.Thread.Sleep(1000) 'Pause for 1000ms
+                    Duration = Now - StartTime
+                    If Duration.Seconds > 16 Then Exit While
+                End While
+
+                If Main.client.ConnectionExists(ProNetName, ConnName) = False Then
+                    Main.Message.AddWarning("Connection not available: " & ConnName & " in application network: " & ProNetName & vbCrLf)
+                Else
+                    If Main.bgwSendMessage.IsBusy Then
+                        Main.Message.AddWarning("Send Message backgroundworker is busy." & vbCrLf)
+                    Else
+                        Dim SendMessageParams As New Main.clsSendMessageParams
+                        SendMessageParams.ProjectNetworkName = ProNetName
+                        SendMessageParams.ConnectionName = ConnName
+                        SendMessageParams.Message = XMsg
+                        Main.bgwSendMessage.RunWorkerAsync(SendMessageParams)
+                        If Main.ShowXMessages Then
+                            Main.Message.XAddText("Message sent to " & "[" & ProNetName & "]." & ConnName & ":" & vbCrLf, "XmlSentNotice")
+                            Main.Message.XAddXml(XMsg)
+                            Main.Message.XAddText(vbCrLf, "Normal") 'Add extra line
+                        End If
+                    End If
+                End If
             End If
         End If
-
     End Sub
 
     Public Sub AddText(ByVal Msg As String, ByVal TextType As String)
@@ -610,10 +729,16 @@ Public Class frmWebPage
         RestoreSetting(FormName, ItemName, Main.Project.ParentParameter(ParameterName).Value)
     End Sub
 
+
     Public Sub ProjectParameterValue(ByVal FormName As String, ByVal ItemName As String, ByVal ParameterName As String)
         'Return the specified Project parameter value:
         RestoreSetting(FormName, ItemName, Main.Project.Parameter(ParameterName).Value)
     End Sub
+
+    Public Function ProjectParameterValue(ByVal Parametername As String) As String
+        'Return the spcified Project Parameter value:
+        Return Main.Project.Parameter(Parametername).Value
+    End Function
 
     'Public Sub ApplicationNetworkName(ByVal FormName As String, ByVal ItemName As String)
     '    'Return the name of the Application Network:

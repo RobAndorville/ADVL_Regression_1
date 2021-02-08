@@ -30,6 +30,12 @@ Namespace ServiceReference1
         <System.ServiceModel.OperationContractAttribute(Action:="http://tempuri.org/IMsgService/ConnectionAvailable", ReplyAction:="http://tempuri.org/IMsgService/ConnectionAvailableResponse")>  _
         Function ConnectionAvailableAsync(ByVal ProNetName As String, ByVal ConnName As String) As System.Threading.Tasks.Task(Of Boolean)
         
+        <System.ServiceModel.OperationContractAttribute(Action:="http://tempuri.org/IMsgService/ConnectionExists", ReplyAction:="http://tempuri.org/IMsgService/ConnectionExistsResponse")>  _
+        Function ConnectionExists(ByVal ProNetName As String, ByVal ConnName As String) As Boolean
+        
+        <System.ServiceModel.OperationContractAttribute(Action:="http://tempuri.org/IMsgService/ConnectionExists", ReplyAction:="http://tempuri.org/IMsgService/ConnectionExistsResponse")>  _
+        Function ConnectionExistsAsync(ByVal ProNetName As String, ByVal ConnName As String) As System.Threading.Tasks.Task(Of Boolean)
+        
         <System.ServiceModel.OperationContractAttribute(Action:="http://tempuri.org/IMsgService/SendMessage", ReplyAction:="http://tempuri.org/IMsgService/SendMessageResponse")>  _
         Sub SendMessage(ByVal proNetName As String, ByVal connName As String, ByVal message As String)
         
@@ -161,6 +167,14 @@ Namespace ServiceReference1
         
         Public Function ConnectionAvailableAsync(ByVal ProNetName As String, ByVal ConnName As String) As System.Threading.Tasks.Task(Of Boolean) Implements ServiceReference1.IMsgService.ConnectionAvailableAsync
             Return MyBase.Channel.ConnectionAvailableAsync(ProNetName, ConnName)
+        End Function
+        
+        Public Function ConnectionExists(ByVal ProNetName As String, ByVal ConnName As String) As Boolean Implements ServiceReference1.IMsgService.ConnectionExists
+            Return MyBase.Channel.ConnectionExists(ProNetName, ConnName)
+        End Function
+        
+        Public Function ConnectionExistsAsync(ByVal ProNetName As String, ByVal ConnName As String) As System.Threading.Tasks.Task(Of Boolean) Implements ServiceReference1.IMsgService.ConnectionExistsAsync
+            Return MyBase.Channel.ConnectionExistsAsync(ProNetName, ConnName)
         End Function
         
         Public Sub SendMessage(ByVal proNetName As String, ByVal connName As String, ByVal message As String) Implements ServiceReference1.IMsgService.SendMessage
